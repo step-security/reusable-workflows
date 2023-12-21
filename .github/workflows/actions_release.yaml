@@ -1,0 +1,111 @@
+name: Release GitHub Actions
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag for the release"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: "./"
+          output-file: ./sbom-${{ github.event.inputs.tag }}.spdx.json
+          format: "spdx"
+
+      - name: Create and Push Tag
+        run: |
+          git tag ${{ github.event.inputs.tag }}
+          git push origin ${{ github.event.inputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        run: gh release create ${{ github.event.inputs.tag }} --generate-notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload SBOM as Release Asset
+        run: gh release upload ${{ github.event.inputs.tag }} *.spdx.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Semantic Tag
+        run: |
+          TAG=${{ github.event.inputs.tag }}
+          SEMANTIC_TAG=$(echo $TAG | grep -oP '^v\d+')
+          git tag -f $SEMANTIC_TAG $TAG
+          git push -f origin $SEMANTIC_TAG
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate and Upload Provenance File
+        run: |
+          echo "Generating provenance.json"
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          TAG_NAME="${{ github.event.inputs.tag }}"
+          COMMIT_SHA=$(git show-ref -s $TAG_NAME)
+          TAG_DETAILS=$(gh api repos/$OWNER/$REPO/git/commits/$COMMIT_SHA | jq '.')
+          jq -n --arg repository "${{ github.repository }}" \
+               --arg workflow "${{ github.workflow }}" \
+               --arg run_id "${{ github.run_id }}" \
+               --arg run_attempt "${{ github.run_attempt }}" \
+               --arg tag "$TAG_NAME" \
+               --arg commit_sha "$COMMIT_SHA" \
+               --argjson tag_details "$TAG_DETAILS" \
+               '{"repository": $repository, "workflow": $workflow, "run_id": $run_id, "run_attempt": $run_attempt, "tag": $tag, "commit_sha": $commit_sha, "tag_details": $tag_details}' > provenance.json
+          cat provenance.json
+          gh release upload ${{ github.event.inputs.tag }} provenance.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Hashes
+        shell: bash
+        id: hash
+        run: |
+          echo "Generating hashes for artifacts"
+          HASHES=$(sha256sum sbom-${{ github.event.inputs.tag }}.spdx.json provenance.json | base64 -w0)
+          echo "hashes=$HASHES" >> "$GITHUB_OUTPUT"
+          echo "hashes=$HASHES"
+
+      - name: Create and Upload provenance_verifier.sh
+        run: |
+          echo '#!/bin/bash' > provenance_verifier.sh
+          echo '# Install slsa-verifier from https://github.com/slsa-framework/slsa-verifier' >> provenance_verifier.sh
+          echo '# Format: slsa-verifier verify-artifact --provenance-path <path to multiple.intoto.jsonl> --source-uri github.com/${{ github.repository }} <path to sbom-${{ github.event.inputs.tag }}.spdx.json> <path to provenance.json>' >> provenance_verifier.sh
+          echo '# For example: slsa-verifier verify-artifact --provenance-path ~/${{ github.repository }}/multiple.intoto.jsonl --source-uri github.com/${{ github.repository }} ~/${{ github.repository }}/sbom-${{ github.event.inputs.tag }}.spdx.json ~/${{ github.repository }}/provenance.json' >> provenance_verifier.sh
+          chmod +x provenance_verifier.sh
+          cat provenance_verifier.sh
+          gh release upload ${{ github.event.inputs.tag }} provenance_verifier.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # This step calls the generic workflow to generate provenance.
+  provenance:
+    needs: [release]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.9.0
+    with:
+      base64-subjects: "${{ needs.release.outputs.hashes }}"
+      # Upload provenance to a new release
+      upload-assets: true
+      upload-tag-name: "${{ github.event.inputs.tag }}"
