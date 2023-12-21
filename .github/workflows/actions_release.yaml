@@ -12,6 +12,8 @@ permissions:
 
 jobs:
   release:
+    environment:
+      name: releaseNewActionVersion
     permissions:
       contents: write
     outputs:
