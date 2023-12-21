@@ -4,8 +4,8 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Tag for the release"
         required: true
+        type: string
 
 permissions:
   contents: read
