@@ -33,20 +33,20 @@ jobs:
 
       - name: Log Action Type
         run: |
-          echo "Action type: ${{ env.action_type }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "**Action Type**: ${{ env.action_type }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Print provided tag
         run: |
-          echo "Provided tag: ${{ github.event.inputs.tag }}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "**Provided Tag**: ${{ github.event.inputs.tag }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Verify Tag Format
         id: verify-tag
         run: |
           if [[ ! "${{ github.event.inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid tag format. The tag must follow semantic versioning (e.g., v3.2.1)."
+            echo "Invalid tag format. The tag must follow semantic versioning (e.g., v3.2.1)." >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
-          echo "Tag format is valid." | tee -a $GITHUB_STEP_SUMMARY
+          echo "**Tag Format**: Valid" >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Node.js
         if: env.action_type == 'node'
@@ -77,9 +77,13 @@ jobs:
       - name: Compare the expected and actual dist/ directories
         if: env.action_type == 'node' && steps.build-step.outcome == 'success'
         run: |
-          if [ "$(git diff --ignore-space-at-eol dist/ | wc -l)" -gt "0" ]; then
-            echo "Detected uncommitted changes after build. See status below:" | tee -a $GITHUB_STEP_SUMMARY
-            git diff | tee -a $GITHUB_STEP_SUMMARY
+          DIFF=$(git diff --ignore-space-at-eol dist/)
+          if [ "$(echo "$DIFF" | wc -l)" -gt "0" ]; then
+            echo "**Detected Uncommitted Changes**" >> $GITHUB_STEP_SUMMARY
+            echo "Detected uncommitted changes after build. See status below:" >> $GITHUB_STEP_SUMMARY
+            echo '```diff' >> $GITHUB_STEP_SUMMARY
+            echo "$DIFF" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
 
