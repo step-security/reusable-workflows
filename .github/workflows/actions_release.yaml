@@ -11,6 +11,66 @@ permissions:
   contents: read
 
 jobs:
+  pre-release:
+    name: Pre-release Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Determine Action Type
+        id: check-action
+        run: |
+          if grep -q "using: ['\"]docker['\"]" action.yml; then
+            echo "action_type=docker" >> $GITHUB_ENV
+          elif grep -q "using: ['\"]node[0-9]*['\"]" action.yml; then
+            echo "action_type=node" >> $GITHUB_ENV
+          else
+            echo "action_type=unknown" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Log Action Type
+        run: |
+          echo "Action type: ${{ env.action_type }}" | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Print provided tag
+        run: |
+          echo "Provided tag: ${{ github.event.inputs.tag }}" | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Verify Tag Format
+        id: verify-tag
+        run: |
+          if [[ ! "${{ github.event.inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag format. The tag must follow semantic versioning (e.g., v3.2.1)."
+            exit 1
+          fi
+          echo "Tag format is valid." | tee -a $GITHUB_STEP_SUMMARY
+
+      - name: Set up Node.js
+        if: env.action_type == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '16'
+
+      - name: Run npm install
+        if: env.action_type == 'node'
+        run: npm install
+
+      - name: Run npm build
+        if: env.action_type == 'node'
+        run: npm run build
+
+      - name: Compare the expected and actual dist/ directories
+        if: env.action_type == 'node'
+        run: |
+          if [ "$(git diff --ignore-space-at-eol dist/ | wc -l)" -gt "0" ]; then
+            echo "Detected uncommitted changes after build. See status below:" | tee -a $GITHUB_STEP_SUMMARY
+            git diff | tee -a $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
   release:
     environment:
       name: releaseNewActionVersion
@@ -19,6 +79,7 @@ jobs:
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     runs-on: ubuntu-latest
+    needs: pre-release
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
