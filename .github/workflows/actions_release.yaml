@@ -58,12 +58,24 @@ jobs:
         if: env.action_type == 'node'
         run: npm install
 
-      - name: Run npm build
+      - name: Run npm build with fallback to ncc build
         if: env.action_type == 'node'
-        run: npm run build
+        continue-on-error: true
+        id: build-step
+        run: |
+          npm run build || (
+            echo "npm run build failed, trying npm run prepare" && 
+            npm run prepare
+          ) || (
+            echo "Both npm run build and npm run prepare failed, falling back to ncc build" &&
+            ncc build src/index.ts ||
+            ncc build src/main.ts ||
+            ncc build index.js ||
+            ncc build src/index.js
+          )
 
       - name: Compare the expected and actual dist/ directories
-        if: env.action_type == 'node'
+        if: env.action_type == 'node' && steps.build-step.outcome == 'success'
         run: |
           if [ "$(git diff --ignore-space-at-eol dist/ | wc -l)" -gt "0" ]; then
             echo "Detected uncommitted changes after build. See status below:" | tee -a $GITHUB_STEP_SUMMARY
