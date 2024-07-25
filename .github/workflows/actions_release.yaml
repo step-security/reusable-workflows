@@ -42,11 +42,29 @@ jobs:
       - name: Verify Tag Format
         id: verify-tag
         run: |
-          if [[ ! "${{ github.event.inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid tag format. The tag must follow semantic versioning (e.g., v3.2.1)." >> $GITHUB_STEP_SUMMARY
+          TAG="${{ github.event.inputs.tag }}"
+          SEMVER_REGEX="^v([1-9][0-9]*|0)\.([1-9][0-9]*|0)\.([1-9][0-9]*|0)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
+
+          if [[ ! "$TAG" =~ $SEMVER_REGEX ]]; then
+            if [[ ! "$TAG" =~ ^v ]]; then
+              echo "**Validation Failed**: Missing 'v' prefix. Example of invalid tag: 1.0.0" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+              echo "**Validation Failed**: Missing patch version. Example of invalid tag: v1.0" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-$ ]]; then
+              echo "**Validation Failed**: Incomplete pre-release version. Example of invalid tag: v1.0.0-" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+$ ]]; then
+              echo "**Validation Failed**: Incomplete build metadata. Example of invalid tag: v1.0.0+" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ v0[0-9]+|\.0[0-9]+|\.0[0-9]+ ]]; then
+              echo "**Validation Failed**: Major, minor, and patch versions must not contain leading zeros. Example of invalid tags: v01.0.0, v1.02.0, v1.0.03" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[^0-9A-Za-z-.] || "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-.*[^0-9A-Za-z-.] ]]; then
+              echo "**Validation Failed**: Pre-release versions must contain only alphanumeric characters and hyphens. Example of invalid tag: v1.0.0-alpha@1" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+[^0-9A-Za-z-.] || "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+.*[^0-9A-Za-z-.] ]]; then
+              echo "**Validation Failed**: Build metadata must contain only alphanumeric characters and hyphens. Example of invalid tag: v1.0.0+build@1234" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "**Validation Failed**: Invalid tag format. The tag must follow semantic versioning (e.g., v1.2.3, v1.2.3-beta.1, v1.2.3+build.1234, v1.2.3-beta.1+build.1234)." >> $GITHUB_STEP_SUMMARY
+            fi
             exit 1
           fi
-          echo "**Tag Format**: Valid" >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Node.js
         if: env.action_type == 'node'
