@@ -11,6 +11,100 @@ permissions:
   contents: read
 
 jobs:
+  pre-release:
+    name: Pre-release Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Determine Action Type
+        id: check-action
+        run: |
+          if grep -q "using: ['\"]docker['\"]" action.yml; then
+            echo "action_type=docker" >> $GITHUB_ENV
+          elif grep -q "using: ['\"]node[0-9]*['\"]" action.yml; then
+            echo "action_type=node" >> $GITHUB_ENV
+          else
+            echo "action_type=unknown" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Log Action Type
+        run: |
+          echo "**Action Type**: ${{ env.action_type }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Print provided tag
+        run: |
+          echo "**Provided Tag**: ${{ github.event.inputs.tag }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify Tag Format
+        id: verify-tag
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          SEMVER_REGEX="^v([1-9][0-9]*|0)\.([1-9][0-9]*|0)\.([1-9][0-9]*|0)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
+
+          if [[ ! "$TAG" =~ $SEMVER_REGEX ]]; then
+            if [[ ! "$TAG" =~ ^v ]]; then
+              echo "**Validation Failed**: Missing 'v' prefix. Example of invalid tag: 1.0.0" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+              echo "**Validation Failed**: Missing patch version. Example of invalid tag: v1.0" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-$ ]]; then
+              echo "**Validation Failed**: Incomplete pre-release version. Example of invalid tag: v1.0.0-" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+$ ]]; then
+              echo "**Validation Failed**: Incomplete build metadata. Example of invalid tag: v1.0.0+" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ v0[0-9]+|\.0[0-9]+|\.0[0-9]+ ]]; then
+              echo "**Validation Failed**: Major, minor, and patch versions must not contain leading zeros. Example of invalid tags: v01.0.0, v1.02.0, v1.0.03" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[^0-9A-Za-z-.] || "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-.*[^0-9A-Za-z-.] ]]; then
+              echo "**Validation Failed**: Pre-release versions must contain only alphanumeric characters and hyphens. Example of invalid tag: v1.0.0-alpha@1" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+[^0-9A-Za-z-.] || "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+.*[^0-9A-Za-z-.] ]]; then
+              echo "**Validation Failed**: Build metadata must contain only alphanumeric characters and hyphens. Example of invalid tag: v1.0.0+build@1234" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "**Validation Failed**: Invalid tag format. The tag must follow semantic versioning (e.g., v1.2.3, v1.2.3-beta.1, v1.2.3+build.1234, v1.2.3-beta.1+build.1234)." >> $GITHUB_STEP_SUMMARY
+            fi
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        if: env.action_type == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '16'
+
+      - name: Run npm install
+        if: env.action_type == 'node'
+        run: npm install
+
+      - name: Run npm build with fallback to ncc build
+        if: env.action_type == 'node'
+        continue-on-error: true
+        id: build-step
+        run: |
+          npm run build || (
+            echo "npm run build failed, trying npm run prepare" && 
+            npm run prepare
+          ) || (
+            echo "Both npm run build and npm run prepare failed, falling back to ncc build" &&
+            ncc build src/index.ts ||
+            ncc build src/main.ts ||
+            ncc build index.js ||
+            ncc build src/index.js
+          )
+
+      - name: Compare the expected and actual dist/ directories
+        if: env.action_type == 'node' && steps.build-step.outcome == 'success'
+        run: |
+          DIFF=$(git diff --ignore-space-at-eol dist/)
+          if [ "$(echo "$DIFF" | wc -l)" -gt "0" ]; then
+            echo "**Detected Uncommitted Changes**" >> $GITHUB_STEP_SUMMARY
+            echo "Detected uncommitted changes after build. See status below:" >> $GITHUB_STEP_SUMMARY
+            echo '```diff' >> $GITHUB_STEP_SUMMARY
+            echo "$DIFF" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
   release:
     environment:
       name: releaseNewActionVersion
@@ -19,6 +113,7 @@ jobs:
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     runs-on: ubuntu-latest
+    needs: pre-release
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
