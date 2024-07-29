@@ -27,9 +27,9 @@ jobs:
       - name: Determine Action Type
         id: check-action
         run: |
-          if grep -q "using: ['\"]docker['\"]" action.yml; then
+          if grep -E -q "using: ['\"]?docker['\"]?" action.yml action.yaml 2>/dev/null; then
             echo "action_type=docker" >> $GITHUB_ENV
-          elif grep -q "using: ['\"]node[0-9]*['\"]" action.yml; then
+          elif grep -E -q "using: ['\"]?node[0-9]+['\"]?" action.yml action.yaml 2>/dev/null; then
             echo "action_type=node" >> $GITHUB_ENV
           else
             echo "action_type=unknown" >> $GITHUB_ENV
