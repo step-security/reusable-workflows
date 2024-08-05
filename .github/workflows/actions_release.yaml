@@ -75,40 +75,67 @@ jobs:
         if: env.action_type == 'node'
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
-          node-version: '16'
-
-      - name: Run npm install
+          node-version: '20'
+      
+      - name: Install dependencies
         if: env.action_type == 'node'
-        run: npm install
-
-      - name: Run npm build with fallback to ncc build
+        run: |
+          if [ -f yarn.lock ]; then
+            yarn install
+          else
+            npm ci
+          fi
+      
+      - name: Run build with fallback to ncc build
         if: env.action_type == 'node'
         continue-on-error: true
         id: build-step
         run: |
-          npm run build || (
-            echo "npm run build failed, trying npm run prepare" && 
-            npm run prepare
-          ) || (
-            echo "Both npm run build and npm run prepare failed, falling back to ncc build" &&
-            ncc build src/index.ts ||
-            ncc build src/main.ts ||
-            ncc build index.js ||
-            ncc build src/index.js
-          )
-
+          if [ -f yarn.lock ]; then
+            yarn run build
+          else
+            npm run build || (
+              echo "npm run build failed, trying npm run prepare" && 
+              npm run prepare
+            ) || (
+              echo "Both npm run build and npm run prepare failed, falling back to ncc build" &&
+              ncc build src/index.ts ||
+              ncc build src/main.ts ||
+              ncc build index.js ||
+              ncc build src/index.js
+            )
+          fi
+      
       - name: Compare the expected and actual dist/ directories
         if: env.action_type == 'node' && steps.build-step.outcome == 'success'
         run: |
-          DIFF=$(git diff --ignore-space-at-eol dist/)
-          if [ "$(echo "$DIFF" | wc -l)" -gt "0" ]; then
-            echo "**Detected Uncommitted Changes**" >> $GITHUB_STEP_SUMMARY
-            echo "Detected uncommitted changes after build. See status below:" >> $GITHUB_STEP_SUMMARY
-            echo '```diff' >> $GITHUB_STEP_SUMMARY
-            echo "$DIFF" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+          DIFF=$(git diff --ignore-all-space --ignore-blank-lines dist/)
+          
+          # Filter out empty lines and whitespace-only lines using awk
+          DIFF_FILTERED=$(echo "$DIFF" | awk 'NF')
+      
+          # Check if there are meaningful differences
+          if [ -n "$DIFF_FILTERED" ]; then
+            echo "**Uncommitted changes detected after build. See the build log for details.**" >> $GITHUB_STEP_SUMMARY
+            
+            echo "### Detected Uncommitted Changes"
+            echo "Detected uncommitted changes after build. See the details below:"
+            echo '```diff'
+            while IFS= read -r line; do
+              if [[ "$line" == \+* ]]; then
+                echo -e "\033[32m$line\033[0m" # Green for additions
+              elif [[ "$line" == \-* ]]; then
+                echo -e "\033[31m$line\033[0m" # Red for deletions
+              else
+                echo "$line"
+              fi
+            done <<< "$DIFF_FILTERED"
+            echo '```'
             exit 1
+          else
+            echo "No meaningful uncommitted changes detected."
           fi
+        shell: bash
 
   release:
     environment:
