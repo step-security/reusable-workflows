@@ -82,8 +82,11 @@ jobs:
         run: |
           if [ -f yarn.lock ]; then
             yarn install
-          else
+          elif [ -f package-lock.json ]; then
             npm ci
+          elif [ -f pnpm-lock.yaml ]; then
+            npm install -g pnpm
+            pnpm install
           fi
       
       - name: Run build with fallback to ncc build
