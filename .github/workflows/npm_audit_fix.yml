@@ -28,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Ensure full commit history to avoid resets
+          fetch-depth: 0 # Ensures full commit history
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -59,16 +59,16 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create Branch
+      - name: Create Branch Without Rebase
         if: env.changes == 'true'
         run: |
           BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
           git checkout -b "$BRANCH_NAME"
           git commit -m "fix: apply npm audit fix"
-          git push origin "$BRANCH_NAME"
+          git push --force origin "$BRANCH_NAME"
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Create Pull Request
+      - name: Create Pull Request (Without Rebase)
         if: env.changes == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
@@ -79,4 +79,9 @@ jobs:
           body: ${{ inputs.pr_body }}
           labels: "dependencies, security"
           delete-branch: false
-          branch-suffix: timestamp # Prevents rebase/reset issues
+          branch-suffix: short-commit-hash  # Prevents automatic rebase
+          commit-message: "fix: apply npm audit fix"
+          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          draft: false
+          maintainer-can-modify: true
