@@ -78,5 +78,4 @@ jobs:
           title: ${{ inputs.pr_title }}
           body: ${{ inputs.pr_body }}
           labels: "dependencies, security"
-          delete-branch: false
-          push-to-fork: false
+          commit-message: "[create-pull-request] automated change --no-rebase"
