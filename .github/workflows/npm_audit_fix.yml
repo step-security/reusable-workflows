@@ -28,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # Ensure full commit history to avoid resets
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -78,4 +78,5 @@ jobs:
           title: ${{ inputs.pr_title }}
           body: ${{ inputs.pr_body }}
           labels: "dependencies, security"
-          commit-message: "[create-pull-request] automated change --no-rebase"
+          delete-branch: false
+          branch-suffix: timestamp # Prevents rebase/reset issues
