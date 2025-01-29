@@ -28,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Ensures full commit history
+          fetch-depth: 0  # Ensures full history is available
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -65,23 +65,23 @@ jobs:
           BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
           git checkout -b "$BRANCH_NAME"
           git commit -m "fix: apply npm audit fix"
-          git push --force origin "$BRANCH_NAME"
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
+          git push origin "$BRANCH_NAME"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Create Pull Request (Without Rebase)
+      - name: Create Pull Request Without Rebase
         if: env.changes == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: actions/github-script@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ env.branch_name }}
-          base: ${{ inputs.base_branch }}
-          title: ${{ inputs.pr_title }}
-          body: ${{ inputs.pr_body }}
-          labels: "dependencies, security"
-          delete-branch: false
-          branch-suffix: short-commit-hash  # Prevents automatic rebase
-          commit-message: "fix: apply npm audit fix"
-          committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
-          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
-          draft: false
-          maintainer-can-modify: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: process.env.BRANCH_NAME,
+              base: "${{ inputs.base_branch }}",
+              title: "${{ inputs.pr_title }}",
+              body: "${{ inputs.pr_body }}",
+              draft: false
+            });
+
+            console.log(`Pull Request created: ${pr.html_url}`);
