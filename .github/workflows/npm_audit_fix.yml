@@ -62,7 +62,7 @@ jobs:
       - name: Create Branch
         if: env.changes == 'true'
         run: |
-          BRANCH_NAME="npm-audit-fix-$(date +%Y-%m-%d)"
+          BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
           git checkout -b "$BRANCH_NAME"
           git commit -m "fix: apply npm audit fix"
           git push origin "$BRANCH_NAME"
