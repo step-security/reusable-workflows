@@ -1,0 +1,116 @@
+name: NPM Audit Fix and PR
+
+on:
+  workflow_call:
+    inputs:
+      force:
+        description: "Use --force flag for npm audit fix?"
+        required: true
+        type: boolean
+      base_branch:
+        description: "Specify a base branch (default: main)"
+        required: false
+        type: string
+        default: "main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  audit-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit fix
+        run: |
+          if [ "${{ inputs.force }}" == "true" ]; then
+            npm audit fix --force || echo "No fixes needed"
+          else
+            npm audit fix || echo "No fixes needed"
+          fi
+
+      - name: Build Project
+        run: npm run build
+
+      - name: Check for Changes
+        id: check_changes
+        run: |
+          git add .
+          
+          if git diff --cached --exit-code; then
+            echo "No changes detected."
+            echo "changes=false" >> $GITHUB_ENV
+          else
+            echo "changes=true" >> $GITHUB_ENV
+          fi
+
+      - name: Configure Git
+        if: env.changes == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create Branch
+        if: env.changes == 'true'
+        run: |
+          FORCE_MODE="${{ inputs.force }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          
+          if [ "$FORCE_MODE" == "true" ]; then
+            BRANCH_NAME="npm-audit-fix-force-$(date +'%Y-%m-%d-%H-%M-%S')"
+            COMMIT_MESSAGE="fix: apply npm audit fix --force"
+            PR_TITLE="fix: Security updates via npm audit fix --force"
+            PR_BODY="This PR applies security updates via \`npm audit fix --force\`."
+          else
+            BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
+            COMMIT_MESSAGE="fix: apply npm audit fix"
+            PR_TITLE="fix: Security updates via npm audit fix"
+            PR_BODY="This PR applies security updates via \`npm audit fix\`."
+          fi
+          
+          git checkout -b "$BRANCH_NAME"
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin "$BRANCH_NAME"
+
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+          echo "PR_BODY=$PR_BODY" >> $GITHUB_ENV
+          echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
+
+      - name: Create Pull Request
+        if: env.changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: process.env.BRANCH_NAME,
+              base: process.env.BASE_BRANCH,
+              title: process.env.PR_TITLE,
+              body: process.env.PR_BODY,
+              draft: false
+            });
+
+            console.log(`Pull Request created: ${pr.html_url}`);
