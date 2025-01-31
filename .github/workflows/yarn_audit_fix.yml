@@ -14,7 +14,7 @@ on:
       pr_body:
         required: false
         type: string
-        default: "This PR applies security updates via `yarn-audit-fix`."
+        default: "This PR applies security updates via yarn-audit-fix."
 
 permissions:
   contents: write
@@ -68,35 +68,83 @@ jobs:
             echo "changes=true" >> $GITHUB_ENV
           fi
 
-      - name: Configure Git
+      - name: Get Latest Commit SHA from Base Branch
         if: env.changes == 'true'
+        id: get_sha
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Fetching latest commit SHA from ${{ inputs.base_branch }}..."
+          SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }} | jq -r .object.sha)
+          echo "sha=$SHA" >> $GITHUB_ENV
 
-      - name: Create Branch
+      - name: Create New Branch Using API
         if: env.changes == 'true'
+        id: create_branch
         run: |
           BRANCH_NAME="yarn-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
-          git checkout -b "$BRANCH_NAME"
-          git commit -m "fix: apply Yarn audit fix"
-          git push origin "$BRANCH_NAME"
+
+          echo "Creating a new branch: $BRANCH_NAME..."
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -d "{\"ref\":\"refs/heads/$BRANCH_NAME\", \"sha\":\"${{ env.sha }}\"}" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs
+
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Create Pull Request
+      - name: Commit Changes Using GitHub API
         if: env.changes == 'true'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data: pr } = await github.rest.pulls.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              head: process.env.BRANCH_NAME,
-              base: "${{ inputs.base_branch }}",
-              title: "${{ inputs.pr_title }}",
-              body: "${{ inputs.pr_body }}",
-              draft: false
-            });
+        run: |
+          echo "Committing changes to $BRANCH_NAME..."
+          FILES_CHANGED=$(git status --porcelain | awk '{print $2}')
+          for file in $FILES_CHANGED; do
+            CONTENT=$(base64 -w 0 $file)
+            FILENAME=$(basename $file)
+            SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }} | jq -r .sha)
+            if [ "$SHA" == "null" ]; then
+              SHA=""
+            fi
 
-            console.log(`Pull Request created: ${pr.html_url}`);
+            # Store JSON payload in a temporary file
+            JSON_PAYLOAD=$(mktemp)
+            echo "{
+              \"message\": \"fix: apply Yarn audit fix\",
+              \"content\": \"$CONTENT\",
+              \"branch\": \"${{ env.BRANCH_NAME }}\",
+              \"sha\": \"$SHA\"
+            }" > $JSON_PAYLOAD
+
+            # Use --data-binary to send the payload
+            curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"$JSON_PAYLOAD" \
+              https://api.github.com/repos/${{ github.repository }}/contents/$file
+          done
+
+      - name: Create Pull Request Using API
+        if: env.changes == 'true'
+        run: |
+          echo "Creating a pull request..."
+          
+          ESCAPED_TITLE=$(echo "${{ inputs.pr_title }}" | jq -Rsa .)
+          ESCAPED_BODY=$(echo "${{ inputs.pr_body }}" | jq -Rsa .)
+
+          API_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{
+              \"title\": $ESCAPED_TITLE,
+              \"body\": $ESCAPED_BODY,
+              \"head\": \"${{ env.BRANCH_NAME }}\",
+              \"base\": \"${{ inputs.base_branch }}\",
+              \"draft\": false
+            }" "https://api.github.com/repos/${{ github.repository }}/pulls")
+
+          echo "API Response: $API_RESPONSE"
+
+          PR_URL=$(echo "$API_RESPONSE" | jq -r '.html_url')
+
+          if [[ "$PR_URL" == "null" ]]; then
+            echo "❌ Error: PR creation failed. Check API response above."
+            exit 1
+          else
+            echo "✅ Pull Request created: $PR_URL"
+          fi
