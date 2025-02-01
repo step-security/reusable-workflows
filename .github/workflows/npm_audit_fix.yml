@@ -56,7 +56,7 @@ jobs:
         id: check_changes
         run: |
           git add .
-          
+
           if git diff --cached --exit-code; then
             echo "No changes detected."
             echo "changes=false" >> $GITHUB_ENV
@@ -64,53 +64,102 @@ jobs:
             echo "changes=true" >> $GITHUB_ENV
           fi
 
-      - name: Configure Git
+      - name: Get Latest Commit SHA from Base Branch
         if: env.changes == 'true'
+        id: get_sha
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Fetching the latest commit SHA from ${{ inputs.base_branch }}..."
+          SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }} | jq -r .object.sha)
+          echo "sha=$SHA" >> $GITHUB_ENV
 
-      - name: Create Branch
+      - name: Create New Branch
         if: env.changes == 'true'
+        id: create_branch
         run: |
           FORCE_MODE="${{ inputs.force }}"
           BASE_BRANCH="${{ inputs.base_branch }}"
-          
+
           if [ "$FORCE_MODE" == "true" ]; then
             BRANCH_NAME="npm-audit-fix-force-$(date +'%Y-%m-%d-%H-%M-%S')"
             COMMIT_MESSAGE="fix: apply npm audit fix --force"
             PR_TITLE="fix: Security updates via npm audit fix --force"
-            PR_BODY="This PR applies security updates via \`npm audit fix --force\`."
+            PR_BODY=$(echo "This PR applies security updates via npm audit fix --force.")
           else
             BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
             COMMIT_MESSAGE="fix: apply npm audit fix"
             PR_TITLE="fix: Security updates via npm audit fix"
-            PR_BODY="This PR applies security updates via \`npm audit fix\`."
+            PR_BODY=$(echo "This PR applies security updates via npm audit fix.")
           fi
-          
-          git checkout -b "$BRANCH_NAME"
-          git commit -m "$COMMIT_MESSAGE"
-          git push origin "$BRANCH_NAME"
 
+          echo "Creating a new branch: $BRANCH_NAME..."
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -d "{\"ref\":\"refs/heads/$BRANCH_NAME\", \"sha\":\"${{ env.sha }}\"}" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs
+          
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
           echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
           echo "PR_BODY=$PR_BODY" >> $GITHUB_ENV
           echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
 
-      - name: Create Pull Request
+      - name: Commit Changes Using GitHub API
         if: env.changes == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { data: pr } = await github.rest.pulls.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              head: process.env.BRANCH_NAME,
-              base: process.env.BASE_BRANCH,
-              title: process.env.PR_TITLE,
-              body: process.env.PR_BODY,
-              draft: false
-            });
+        run: |
+          echo "Committing changes to $BRANCH_NAME..."
+          FILES_CHANGED=$(git status --porcelain | awk '{print $2}')
+          for file in $FILES_CHANGED; do
+            CONTENT=$(base64 -w 0 $file)
+            FILENAME=$(basename $file)
+            SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }} | jq -r .sha)
+            if [ "$SHA" == "null" ]; then
+              SHA=""
+            fi
 
-            console.log(`Pull Request created: ${pr.html_url}`);
+            # Store JSON payload in a temporary file
+            JSON_PAYLOAD=$(mktemp)
+            echo "{
+              \"message\": \"${{ env.COMMIT_MESSAGE }}\",
+              \"content\": \"$CONTENT\",
+              \"branch\": \"${{ env.BRANCH_NAME }}\",
+              \"sha\": \"$SHA\"
+            }" > $JSON_PAYLOAD
+
+            # Use --data-binary to send the payload
+            curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              --data-binary @"$JSON_PAYLOAD" \
+              https://api.github.com/repos/${{ github.repository }}/contents/$file
+          done
+
+
+      - name: Create Pull Request Using API
+        if: env.changes == 'true'
+        run: |
+          echo "Creating a pull request..."
+          
+          ESCAPED_TITLE=$(echo "${{ env.PR_TITLE }}" | jq -Rsa .)
+          ESCAPED_BODY=$(echo "${{ env.PR_BODY }}" | jq -Rsa .)
+
+          API_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{
+              \"title\": $ESCAPED_TITLE,
+              \"body\": $ESCAPED_BODY,
+              \"head\": \"${{ env.BRANCH_NAME }}\",
+              \"base\": \"${{ inputs.base_branch }}\",
+              \"draft\": false
+            }" "https://api.github.com/repos/${{ github.repository }}/pulls")
+
+          echo "API Response: $API_RESPONSE"
+
+          PR_URL=$(echo "$API_RESPONSE" | jq -r '.html_url')
+
+          if [[ "$PR_URL" == "null" ]]; then
+            echo "❌ Error: PR creation failed. Check API response above."
+            exit 1
+          else
+            echo "✅ Pull Request created: $PR_URL"
+          fi
+
