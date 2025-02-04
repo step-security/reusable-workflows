@@ -97,14 +97,21 @@ jobs:
         run: |
           FORCE_MODE="${{ inputs.force }}"
           BASE_BRANCH="${{ inputs.base_branch }}"
+          INTERNAL_VULN="${{ env.internal_vuln }}"
+          TIMESTAMP="$(date +'%Y-%m-%d-%H-%M-%S')"
 
           if [ "$FORCE_MODE" == "true" ]; then
-            BRANCH_NAME="npm-audit-fix-force-$(date +'%Y-%m-%d-%H-%M-%S')"
+            BRANCH_NAME="npm-audit-fix-force-$TIMESTAMP"
             COMMIT_MESSAGE="fix: apply npm audit fix --force"
             PR_TITLE="fix: Security updates via npm audit fix --force"
             PR_BODY=$(echo "This PR applies security updates via npm audit fix --force.")
+          elif [ "$INTERNAL_VULN" == "true" ]; then
+            BRANCH_NAME="npm-upgrade-$TIMESTAMP"
+            COMMIT_MESSAGE="fix: apply npm upgrade"
+            PR_TITLE="fix: Security updates via npm upgrade"
+            PR_BODY=$(echo "This PR applies security updates via npm upgrade")
           else
-            BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
+            BRANCH_NAME="npm-audit-fix-$TIMESTAMP"
             COMMIT_MESSAGE="fix: apply npm audit fix"
             PR_TITLE="fix: Security updates via npm audit fix"
             PR_BODY=$(echo "This PR applies security updates via npm audit fix.")
