@@ -6,6 +6,11 @@ on:
       tag:
         required: true
         type: string
+      script:
+        description: "Specify the npm script to run"
+        required: true
+        type: string
+        default: "npm run build"
 
 permissions:
   contents: read
@@ -96,25 +101,24 @@ jobs:
             fi
           fi
       
-      - name: Run build with fallback to ncc build
+      - name: Run Specified Build Script
         if: env.action_type == 'node'
         continue-on-error: true
         id: build-step
         run: |
-          if [ -f yarn.lock ]; then
-            yarn run build
+          SCRIPT="${{ inputs.script }}"
+          
+          if [ -n "$SCRIPT" ]; then
+            echo "Running: $SCRIPT"
           else
-            npm run build || (
-              echo "npm run build failed, trying npm run prepare" && 
-              npm run prepare
-            ) || (
-              echo "Both npm run build and npm run prepare failed, falling back to ncc build" &&
-              ncc build src/index.ts ||
-              ncc build src/main.ts ||
-              ncc build index.js ||
-              ncc build src/index.js
-            )
+            if [ -f yarn.lock ]; then
+              SCRIPT="yarn run build"
+            else
+              SCRIPT="npm run build"
+            fi
           fi
+
+          eval "$SCRIPT" || echo "No build script found or failed, skipping."
       
       - name: Compare the expected and actual dist/ directories
         if: env.action_type == 'node' && steps.build-step.outcome == 'success'
