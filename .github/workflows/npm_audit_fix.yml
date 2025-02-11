@@ -47,11 +47,13 @@ jobs:
         run: |
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
           echo "@${{ github.repository_owner }}:registry=https://npm.pkg.github.com/" >> ~/.npmrc
-
+          cat ~/.npmrc
 
       - name: Install dependencies
-        run: npm ci
-
+        run: |
+          cat ~/.npmrc
+          npm ci
+  
       - name: Run npm audit fix
         run: |
           if [ "${{ inputs.force }}" == "true" ]; then
