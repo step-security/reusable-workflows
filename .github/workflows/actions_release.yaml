@@ -7,8 +7,8 @@ on:
         required: true
         type: string
       script:
-        description: "Specify the npm script to run"
-        required: true
+        description: "Specify the build script to run"
+        required: false
         type: string
         default: "npm run build"
 
@@ -96,22 +96,17 @@ jobs:
       
       - name: Run Specified Build Script
         if: env.action_type == 'node'
-        continue-on-error: true
         id: build-step
         run: |
           SCRIPT="${{ inputs.script }}"
-          
-          if [ -n "$SCRIPT" ]; then
-            echo "Running: $SCRIPT"
-          else
-            if [ -f yarn.lock ]; then
-              SCRIPT="yarn run build"
-            else
-              SCRIPT="npm run build"
-            fi
+          eval "$SCRIPT"
+          EXIT_CODE=$?
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Build script failed or not found!"
+            exit 1
           fi
 
-          eval "$SCRIPT" || echo "No build script found or failed, skipping."
 
       - name: Compare the expected and actual dist/ directories
         if: env.action_type == 'node' && steps.build-step.outcome == 'success'

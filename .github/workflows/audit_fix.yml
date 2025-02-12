@@ -5,8 +5,9 @@ on:
     inputs:
       package_manager:
         description: "Specify package manager (npm or yarn)"
-        required: true
+        required: false
         type: string
+        default: "npm"
       force:
         description: "Use --force flag for npm audit fix?"
         required: false
@@ -14,7 +15,7 @@ on:
         default: false
       base_branch:
         description: "Specify a base branch (default: main)"
-        required: true
+        required: false
         type: string
         default: "main"
       use_private_packages:
@@ -23,9 +24,9 @@ on:
         type: boolean
       script:
         description: "Specify the npm/yarn script to run"
-        required: true
+        required: false
         type: string
-        default: "build"
+        default: "npm run build"
 
 permissions:
   contents: write
@@ -82,18 +83,7 @@ jobs:
       - name: Run Specified Build Script
         run: |
           SCRIPT="${{ inputs.script }}"
-          if [ -n "$SCRIPT" ]; then
-            echo "Running: $SCRIPT"
-          else
-            if [ "${{ inputs.package_manager }}" == "npm" ]; then
-              SCRIPT="npm run build"
-            else
-              SCRIPT="yarn build"
-            fi
-          fi
-
           eval "$SCRIPT" || echo "No build script found or failed, skipping."
-
 
       - name: Check for Changes
         id: check_changes
