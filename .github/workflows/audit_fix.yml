@@ -7,6 +7,7 @@ on:
         description: "Specify package manager (npm or yarn)"
         required: true
         type: string
+        default: "npm"
       force:
         description: "Use --force flag for npm audit fix?"
         required: false
@@ -25,7 +26,7 @@ on:
         description: "Specify the npm/yarn script to run"
         required: true
         type: string
-        default: "build"
+        default: "npm run build"
 
 permissions:
   contents: write
