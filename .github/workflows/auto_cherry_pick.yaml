@@ -277,7 +277,7 @@ jobs:
           {
             echo "🚀 PR Updated!"
             echo ""
-            echo "@rajkumarpanda, the PR has been updated with the latest cherry-picked commits."
+            echo "The PR has been updated with the latest cherry-picked commits."
             echo ""
 
             if [ -n "${{ env.SKIPPED_COMMITS }}" ]; then
@@ -315,3 +315,13 @@ jobs:
               -d "{\"body\": $COMMENT_BODY_ESCAPED}" \
               "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments"
           fi
+
+      - name: Request Review To Get Notifications
+        if: env.PR_NUMBER != ''
+        run: |
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d '{
+              "reviewers": ["Raj-StepSecurity"]
+            }' \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/requested_reviewers"
