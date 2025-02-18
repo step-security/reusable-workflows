@@ -1,0 +1,196 @@
+name: Dependency Audit Fix and PR
+
+on:
+  workflow_call:
+    inputs:
+      package_manager:
+        description: "Specify package manager (npm or yarn)"
+        required: true
+        type: string
+        default: "npm"
+      force:
+        description: "Use --force flag for npm audit fix?"
+        required: false
+        type: boolean
+        default: false
+      base_branch:
+        description: "Specify a base branch (default: main)"
+        required: true
+        type: string
+        default: "main"
+      use_private_packages:
+        description: "Use private packages (default: false)"
+        required: false
+        type: boolean
+      script:
+        description: "Specify the npm/yarn script to run"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+
+jobs:
+  audit-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "20"
+          cache: ${{ inputs.package_manager }}
+
+      - name: Authenticate npm with GitHub Packages (if using private packages)
+        if: inputs.use_private_packages == true
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
+          echo "@${{ github.repository_owner }}:registry=https://npm.pkg.github.com/" >> ~/.npmrc
+
+      - name: Install dependencies
+        run: |
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            npm ci
+          else
+            yarn install --frozen-lockfile
+          fi
+
+      - name: Run Audit Fix
+        run: |
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            if [ "${{ inputs.force }}" == "true" ]; then
+              npm audit fix --force || echo "No fixes needed"
+            else
+              npm audit fix || echo "No fixes needed"
+            fi
+          else
+            npx yarn-audit-fix || echo "No fixes needed"
+          fi
+
+      - name: Run Specified Build Script
+        run: |
+          if [ -n "$SCRIPT" ]; then
+            echo "Running: $SCRIPT"
+          else
+            if [ "${{ inputs.package_manager }}" == "npm" ]; then
+              SCRIPT="npm run build"
+            else
+              SCRIPT="yarn build"
+            fi
+          fi
+
+      - name: Check for Changes
+        id: check_changes
+        run: |
+          git add .
+
+          if git diff --cached --exit-code; then
+            echo "No changes detected."
+            echo "changes=false" >> $GITHUB_ENV
+          else
+            echo "changes=true" >> $GITHUB_ENV
+          fi
+
+      - name: Determine Branch and PR Details
+        id: branch_details
+        run: |
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            if [ "${{ inputs.force }}" == "true" ]; then
+              BRANCH_NAME="npm-audit-fix-force"
+              PR_TITLE="fix: Security updates via npm audit fix --force"
+              COMMIT_MESSAGE="fix: apply npm audit fix --force"
+            else
+              BRANCH_NAME="npm-audit-fix"
+              PR_TITLE="fix: Security updates via npm audit fix"
+              COMMIT_MESSAGE="fix: apply npm audit fix"
+            fi
+          else
+            BRANCH_NAME="yarn-audit-fix"
+            PR_TITLE="fix: Security updates via Yarn audit fix"
+            COMMIT_MESSAGE="fix: apply Yarn audit fix"
+          fi
+          
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
+
+      - name: Check if Branch Exists
+        run: |
+          BRANCH_EXISTS=$(git ls-remote --heads origin ${{ env.BRANCH_NAME }} | wc -l)
+          if [ "$BRANCH_EXISTS" -eq 1 ]; then
+            echo "Branch ${{ env.BRANCH_NAME }} exists."
+            git fetch origin ${{ env.BRANCH_NAME }}
+            git checkout ${{ env.BRANCH_NAME }}
+            git reset --hard origin/${{ inputs.base_branch }}
+          else
+            echo "Branch does not exist. Creating it."
+            git checkout -b ${{ env.BRANCH_NAME }}
+          fi
+
+      - name: Commit and Push Changes
+        if: env.changes == 'true'
+        run: |
+          git add .
+          git commit -m "${{ env.COMMIT_MESSAGE }}" || echo "No changes to commit."
+          git push origin ${{ env.BRANCH_NAME }}
+
+      - name: Check for Existing PR
+        id: check_pr
+        run: |
+          REPO=${{ github.repository }}
+          TOKEN=${{ secrets.GITHUB_TOKEN }}
+          
+          EXISTING_PR=$(curl -s -H "Authorization: token $TOKEN" \
+            "https://api.github.com/repos/$REPO/pulls?state=open&head=${{ github.repository_owner }}:${{ env.BRANCH_NAME }}" \
+            | jq -r '.[0].html_url')
+
+          if [[ "$EXISTING_PR" != "null" && -n "$EXISTING_PR" ]]; then
+            echo "Existing PR found: $EXISTING_PR"
+            echo "pr_exists=true" >> $GITHUB_ENV
+            echo "pr_url=$EXISTING_PR" >> $GITHUB_ENV
+          else
+            echo "No existing PR found."
+            echo "pr_exists=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create or Update Pull Request
+        if: env.changes == 'true'
+        run: |
+          if [ "${{ env.pr_exists }}" == "true" ]; then
+            echo "✅ PR already exists: ${{ env.pr_url }} - No new PR needed."
+          else
+            echo "Creating a new PR..."
+            ESCAPED_TITLE=$(echo "${{ env.PR_TITLE }}" | jq -Rsa .)
+            ESCAPED_BODY=$(echo "This PR applies security updates via ${{ inputs.package_manager }} audit fix." | jq -Rsa .)
+
+            API_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{
+                \"title\": $ESCAPED_TITLE,
+                \"body\": $ESCAPED_BODY,
+                \"head\": \"${{ env.BRANCH_NAME }}\",
+                \"base\": \"${{ inputs.base_branch }}\",
+                \"draft\": false
+              }" "https://api.github.com/repos/${{ github.repository }}/pulls")
+
+            PR_URL=$(echo "$API_RESPONSE" | jq -r '.html_url')
+
+            if [[ "$PR_URL" == "null" ]]; then
+              echo "❌ Error: PR creation failed. Check API response above."
+              exit 1
+            else
+              echo "✅ Pull Request created: $PR_URL"
+            fi
+          fi
