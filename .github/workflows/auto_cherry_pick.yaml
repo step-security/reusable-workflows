@@ -109,14 +109,17 @@ jobs:
           TOKEN=${{ secrets.GITHUB_TOKEN }}
           BRANCH_NAME="auto-cherry-pick"
           
-          EXISTING_PR=$(curl -s -H "Authorization: token $TOKEN" \
-            "https://api.github.com/repos/$REPO/pulls?state=open&head=${{ github.repository_owner }}:$BRANCH_NAME" \
-            | jq -r '.[0] | select(.html_url != null) | .html_url' || echo "")
+          EXISTING_PR_JSON=$(curl -s -H "Authorization: token $TOKEN" \
+            "https://api.github.com/repos/$REPO/pulls?state=open&head=${{ github.repository_owner }}:$BRANCH_NAME")
 
-          if [[ -n "$EXISTING_PR" ]]; then
-            echo "Existing PR found: $EXISTING_PR"
+          EXISTING_PR_URL=$(echo "$EXISTING_PR_JSON" | jq -r '.[0] | select(.html_url != null) | .html_url' || echo "")
+          EXISTING_PR_NUMBER=$(echo "$EXISTING_PR_JSON" | jq -r '.[0] | select(.number != null) | .number' || echo "")
+
+          if [[ -n "$EXISTING_PR_URL" && -n "$EXISTING_PR_NUMBER" ]]; then
+            echo "Existing PR found: $EXISTING_PR_URL (PR #$EXISTING_PR_NUMBER)"
             echo "pr_exists=true" >> $GITHUB_ENV
-            echo "pr_url=$EXISTING_PR" >> $GITHUB_ENV
+            echo "pr_url=$EXISTING_PR_URL" >> $GITHUB_ENV
+            echo "PR_NUMBER=$EXISTING_PR_NUMBER" >> $GITHUB_ENV
           else
             echo "No existing PR found."
             echo "pr_exists=false" >> $GITHUB_ENV
@@ -164,18 +167,24 @@ jobs:
               fi
             fi
 
-            if git diff --name-only --cached | grep -q "^.github/workflows/"; then
+            LATEST_COMMIT_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
+
+            WORKFLOW_FILE_CHANGES=$(echo "$LATEST_COMMIT_FILES" | grep "^.github/workflows/" || true)
+            NON_WORKFLOW_CHANGES=$(echo "$LATEST_COMMIT_FILES" | grep -v "^.github/workflows/" || true)
+
+            if [ -n "$WORKFLOW_FILE_CHANGES" ]; then
               echo "⚠️ Workflow file changes detected. They will not be committed."
               WORKFLOW_CHANGES=true
-              
+
               git checkout HEAD -- .github/workflows/
               git reset HEAD -- .github/workflows/
             fi
 
-            if git diff --cached --quiet; then
-              echo "No real changes after workflow cleanup."
-            else
+            if [ -n "$NON_WORKFLOW_CHANGES" ]; then
+              echo "✅ Detected non-workflow file changes."
               CHANGES_FOUND=true
+            else
+              echo "⚠️ No real changes after workflow cleanup."
             fi
 
             git commit --amend --no-edit --author="github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
@@ -237,7 +246,7 @@ jobs:
             echo "✅ PR already exists: ${{ env.pr_url }} - No new PR needed."
           else
             echo "Creating a new PR..."
-            git push origin "$BRANCH_NAME"
+            git push origin "$BRANCH_NAME" --force
             API_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{
@@ -260,22 +269,49 @@ jobs:
             fi
           fi
 
-      - name: Comment on PR with Skipped Commits
-        if: env.SKIPPED_COMMITS != ''
+      - name: Comment on PR with Updates (Single Comment Per PR)
+        if: env.PR_NUMBER != ''
         run: |
-          echo "Adding a comment with skipped commit hashes..."
-          COMMENT_BODY=""
-    
-          if [ -n "${{ env.SKIPPED_COMMITS }}" ]; then
-            COMMENT_BODY="⚠️ **Some commits were skipped due to conflicts:**\n\n${{ env.SKIPPED_COMMITS }}\n\n"
-          fi
+          echo "Checking for existing bot comment on PR #${{ env.PR_NUMBER }}"
 
-          if [ "${{ env.WORKFLOW_CHANGES }}" == "true" ]; then
-            COMMENT_BODY="${COMMENT_BODY}⚠️ **Workflow file changes detected!**\n\nWorkflow files (`.github/workflows/*.yml`) were modified in upstream commits but have been **excluded from this PR**.\n\n🚀 Please review and manually handle these changes."
-          fi    
-      
-          COMMENT_BODY_ESCAPED=$(echo -e "$COMMENT_BODY" | jq -Rs .)
-          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          {
+            echo "🚀 PR Updated!"
+            echo ""
+            echo "@rajkumarpanda, the PR has been updated with the latest cherry-picked commits."
+            echo ""
+
+            if [ -n "${{ env.SKIPPED_COMMITS }}" ]; then
+              echo "⚠️ Skipped Commits Due to Conflicts:"
+              while IFS= read -r line; do
+                echo "- $line"
+              done <<< "${{ env.SKIPPED_COMMITS }}"
+              echo ""
+            fi
+
+            if [ "${{ env.WORKFLOW_CHANGES }}" == "true" ]; then
+              echo "⚠️ Workflow file changes were detected and **excluded from this PR**."
+              echo "Please review and handle them manually."
+              echo ""
+            fi
+          } > comment_body.txt
+
+          COMMENT_BODY_ESCAPED=$(jq -Rs . < comment_body.txt)
+
+          EXISTING_COMMENT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\": $COMMENT_BODY_ESCAPED}" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments"
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments" | 
+            jq -r '.[] | select(.body | contains("🚀 PR Updated!")) | .id')
+
+          if [ -n "$EXISTING_COMMENT_ID" ]; then
+            echo "Updating existing comment: $EXISTING_COMMENT_ID"
+            curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": $COMMENT_BODY_ESCAPED}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$EXISTING_COMMENT_ID"
+          else
+            echo "No existing comment found. Creating a new comment."
+            curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": $COMMENT_BODY_ESCAPED}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments"
+          fi
