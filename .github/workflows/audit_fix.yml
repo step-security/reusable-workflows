@@ -24,9 +24,8 @@ on:
         type: boolean
       script:
         description: "Specify the npm/yarn script to run"
-        required: true
+        required: false
         type: string
-        default: "npm run build"
 
 permissions:
   contents: write

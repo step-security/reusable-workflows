@@ -8,9 +8,8 @@ on:
         type: string
       script:
         description: "Specify the build script to run"
-        required: true
+        required: false
         type: string
-        default: "npm run build"
 
 permissions:
   contents: read
