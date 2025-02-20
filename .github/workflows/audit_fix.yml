@@ -97,111 +97,87 @@ jobs:
             echo "changes=true" >> $GITHUB_ENV
           fi
 
-      - name: Get Latest Commit SHA from Base Branch
+      - name: Determine Branch Name
         if: env.changes == 'true'
-        id: get_sha
+        id: set_branch
         run: |
-          echo "Fetching the latest commit SHA from ${{ inputs.base_branch }}..."
-          SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }} | jq -r .object.sha)
-          echo "sha=$SHA" >> $GITHUB_ENV
-
-      - name: Create New Branch
-        if: env.changes == 'true'
-        id: create_branch
-        run: |
-          PACKAGE_MANAGER="${{ inputs.package_manager }}"
-          FORCE_MODE="${{ inputs.force }}"
-          BASE_BRANCH="${{ inputs.base_branch }}"
-
-          if [ "$PACKAGE_MANAGER" == "npm" ]; then
-            if [ "$FORCE_MODE" == "true" ]; then
-              BRANCH_NAME="npm-audit-fix-force-$(date +'%Y-%m-%d-%H-%M-%S')"
-              COMMIT_MESSAGE="fix: apply npm audit fix --force"
-              PR_TITLE="fix: Security updates via npm audit fix --force"
-              PR_BODY=$(echo "This PR applies security updates via npm audit fix --force.")
-
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            if [ "${{ inputs.force }}" == "true" ]; then
+              BRANCH_NAME="npm-audit-fix-force"
             else
-              BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
-              COMMIT_MESSAGE="fix: apply npm audit fix"
-              PR_TITLE="fix: Security updates via npm audit fix"
-              PR_BODY=$(echo "This PR applies security updates via npm audit fix.")
+              BRANCH_NAME="npm-audit-fix"
             fi
           else
-            BRANCH_NAME="yarn-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
-            COMMIT_MESSAGE="fix: apply Yarn audit fix"
-            PR_TITLE="fix: Security updates via Yarn audit fix"
-            PR_BODY=$(echo "This PR applies security updates via yarn-audit-fix.")
+            BRANCH_NAME="yarn-audit-fix"
+          fi
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
+      - name: Reset & Force Update PR Branch
+        if: env.changes == 'true'
+        run: |
+          git fetch origin
+          if git rev-parse --verify origin/${{ env.BRANCH_NAME }} >/dev/null 2>&1; then
+            echo "Branch ${{ env.BRANCH_NAME }} exists. Resetting..."
+            git checkout ${{ env.BRANCH_NAME }}
+            git reset --hard origin/${{ inputs.base_branch }}
+          else
+            echo "Branch ${{ env.BRANCH_NAME }} does not exist. Creating..."
+            git checkout -b ${{ env.BRANCH_NAME }} origin/${{ inputs.base_branch }}
           fi
 
-          echo "Creating a new branch: $BRANCH_NAME..."
-          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -d "{\"ref\":\"refs/heads/$BRANCH_NAME\", \"sha\":\"${{ env.sha }}\"}" \
-            https://api.github.com/repos/${{ github.repository }}/git/refs
-          
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
-          echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
-          echo "PR_BODY=$PR_BODY" >> $GITHUB_ENV
-          echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
-
-      - name: Commit Changes Using GitHub API
+      - name: Commit and Force Push Changes
         if: env.changes == 'true'
         run: |
-          echo "Committing changes to $BRANCH_NAME..."
-          FILES_CHANGED=$(git status --porcelain | awk '{print $2}')
-          for file in $FILES_CHANGED; do
-            CONTENT=$(base64 -w 0 $file)
-            FILENAME=$(basename $file)
-            SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              https://api.github.com/repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }} | jq -r .sha)
-            if [ "$SHA" == "null" ]; then
-              SHA=""
-            fi
+          git add .
+          git commit -m "fix: apply audit fixes" || echo "No new changes to commit"
+          git push --force origin ${{ env.BRANCH_NAME }}
 
-            # Store JSON payload in a temporary file
-            JSON_PAYLOAD=$(mktemp)
-            echo "{
-              \"message\": \"${{ env.COMMIT_MESSAGE }}\",
-              \"content\": \"$CONTENT\",
-              \"branch\": \"${{ env.BRANCH_NAME }}\",
-              \"sha\": \"$SHA\"
-            }" > $JSON_PAYLOAD
-
-            # Use --data-binary to send the payload
-            curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              --data-binary @"$JSON_PAYLOAD" \
-              https://api.github.com/repos/${{ github.repository }}/contents/$file
-          done
-
-
-      - name: Create Pull Request Using API
+      - name: Check for Existing Open PR
         if: env.changes == 'true'
+        id: check_pr
         run: |
-          echo "Creating a pull request..."
-          
-          ESCAPED_TITLE=$(echo "${{ env.PR_TITLE }}" | jq -Rsa .)
-          ESCAPED_BODY=$(echo "${{ env.PR_BODY }}" | jq -Rsa .)
+          EXISTING_PR=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" \
+            | jq -r --arg branch "${{ env.BRANCH_NAME }}" '.[] | select(.head.ref == $branch) | .html_url')
 
-          API_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          if [[ -n "$EXISTING_PR" && "$EXISTING_PR" != "null" ]]; then
+            echo "Existing PR found: $EXISTING_PR"
+            echo "EXISTING_PR_URL=$EXISTING_PR" >> $GITHUB_ENV
+          else
+            echo "No existing PR found."
+            echo "EXISTING_PR_URL=" >> $GITHUB_ENV
+          fi
+
+      - name: Create Pull Request (if not existing)
+        if: env.changes == 'true' && env.EXISTING_PR_URL == ''
+        run: |
+          echo "Creating a new pull request..."
+          PR_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -d "{
-              \"title\": $ESCAPED_TITLE,
-              \"body\": $ESCAPED_BODY,
+              \"title\": \"fix: Security updates via ${{ env.BRANCH_NAME }}\",
+              \"body\": \"This PR applies security updates via audit fix.\",
               \"head\": \"${{ env.BRANCH_NAME }}\",
               \"base\": \"${{ inputs.base_branch }}\",
               \"draft\": false
             }" "https://api.github.com/repos/${{ github.repository }}/pulls")
 
-          echo "API Response: $API_RESPONSE"
+          PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url')
 
-          PR_URL=$(echo "$API_RESPONSE" | jq -r '.html_url')
-
-          if [[ "$PR_URL" == "null" ]]; then
-            echo "❌ Error: PR creation failed. Check API response above."
+          if [[ "$PR_URL" == "null" || -z "$PR_URL" ]]; then
+            echo "❌ Error: PR creation failed. Full API response:"
+            echo "$PR_RESPONSE"
             exit 1
           else
             echo "✅ Pull Request created: $PR_URL"
           fi
+
+      - name: Request Review
+        if: env.PR_NUMBER != ''
+        run: |
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d '{
+              "team_reviewers": ["maintained-actions-dev"]
+            }' \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/requested_reviewers"
