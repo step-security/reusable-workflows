@@ -54,6 +54,11 @@ jobs:
           node-version: "20"
           cache: ${{ inputs.package_manager }}
 
+      - name: Set up Git User
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+     
       - name: Authenticate npm with GitHub Packages (if using private packages)
         if: inputs.use_private_packages == true
         run: |
@@ -66,6 +71,32 @@ jobs:
             npm ci
           else
             yarn install --frozen-lockfile
+          fi
+
+      - name: Determine Branch Name
+        id: set_branch
+        run: |
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            if [ "${{ inputs.force }}" == "true" ]; then
+              BRANCH_NAME="npm-audit-fix-force"
+            else
+              BRANCH_NAME="npm-audit-fix"
+            fi
+          else
+            BRANCH_NAME="yarn-audit-fix"
+          fi
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Reset & Force Update PR Branch
+        run: |
+          git fetch origin
+          if git rev-parse --verify origin/${{ env.BRANCH_NAME }} >/dev/null 2>&1; then
+            echo "Branch ${{ env.BRANCH_NAME }} exists. Resetting..."
+            git checkout ${{ env.BRANCH_NAME }}
+            git reset --hard origin/${{ inputs.base_branch }}
+          else
+            echo "Branch ${{ env.BRANCH_NAME }} does not exist. Creating..."
+            git checkout -b ${{ env.BRANCH_NAME }} origin/${{ inputs.base_branch }}
           fi
 
       - name: Run Audit Fix
@@ -97,39 +128,10 @@ jobs:
             echo "changes=true" >> $GITHUB_ENV
           fi
 
-      - name: Determine Branch Name
-        if: env.changes == 'true'
-        id: set_branch
-        run: |
-          if [ "${{ inputs.package_manager }}" == "npm" ]; then
-            if [ "${{ inputs.force }}" == "true" ]; then
-              BRANCH_NAME="npm-audit-fix-force"
-            else
-              BRANCH_NAME="npm-audit-fix"
-            fi
-          else
-            BRANCH_NAME="yarn-audit-fix"
-          fi
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-
-      - name: Reset & Force Update PR Branch
-        if: env.changes == 'true'
-        run: |
-          git fetch origin
-          if git rev-parse --verify origin/${{ env.BRANCH_NAME }} >/dev/null 2>&1; then
-            echo "Branch ${{ env.BRANCH_NAME }} exists. Resetting..."
-            git checkout ${{ env.BRANCH_NAME }}
-            git reset --hard origin/${{ inputs.base_branch }}
-          else
-            echo "Branch ${{ env.BRANCH_NAME }} does not exist. Creating..."
-            git checkout -b ${{ env.BRANCH_NAME }} origin/${{ inputs.base_branch }}
-          fi
-
       - name: Commit and Force Push Changes
         if: env.changes == 'true'
         run: |
-          git add .
-          git commit -m "fix: apply audit fixes" || echo "No new changes to commit"
+          git commit -m "fix: apply audit fixes"
           git push --force origin ${{ env.BRANCH_NAME }}
 
       - name: Check for Existing Open PR
@@ -138,18 +140,18 @@ jobs:
         run: |
           EXISTING_PR=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" \
-            | jq -r --arg branch "${{ env.BRANCH_NAME }}" '.[] | select(.head.ref == $branch) | .html_url')
+            | jq -r --arg branch "${{ env.BRANCH_NAME }}" '.[] | select(.head.ref == $branch) | .number')
 
           if [[ -n "$EXISTING_PR" && "$EXISTING_PR" != "null" ]]; then
-            echo "Existing PR found: $EXISTING_PR"
-            echo "EXISTING_PR_URL=$EXISTING_PR" >> $GITHUB_ENV
+            echo "Existing PR found: #$EXISTING_PR"
+            echo "PR_NUMBER=$EXISTING_PR" >> $GITHUB_ENV
           else
             echo "No existing PR found."
-            echo "EXISTING_PR_URL=" >> $GITHUB_ENV
+            echo "PR_NUMBER=" >> $GITHUB_ENV
           fi
 
       - name: Create Pull Request (if not existing)
-        if: env.changes == 'true' && env.EXISTING_PR_URL == ''
+        if: env.changes == 'true' && env.PR_NUMBER == ''
         run: |
           echo "Creating a new pull request..."
           PR_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
@@ -162,6 +164,7 @@ jobs:
               \"draft\": false
             }" "https://api.github.com/repos/${{ github.repository }}/pulls")
 
+          PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.number')
           PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url')
 
           if [[ "$PR_URL" == "null" || -z "$PR_URL" ]]; then
@@ -170,11 +173,13 @@ jobs:
             exit 1
           else
             echo "✅ Pull Request created: $PR_URL"
+            echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
           fi
 
       - name: Request Review
         if: env.PR_NUMBER != ''
         run: |
+          echo "Requesting review for PR #${{ env.PR_NUMBER }}..."
           curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -d '{
