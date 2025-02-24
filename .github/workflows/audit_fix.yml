@@ -1,12 +1,18 @@
-name: NPM Audit Fix and PR
+name: Dependency Audit Fix and PR
 
 on:
   workflow_call:
     inputs:
+      package_manager:
+        description: "Specify package manager (npm or yarn)"
+        required: false
+        type: string
+        default: "npm"
       force:
         description: "Use --force flag for npm audit fix?"
-        required: true
+        required: false
         type: boolean
+        default: false
       base_branch:
         description: "Specify a base branch (default: main)"
         required: false
@@ -16,10 +22,16 @@ on:
         description: "Use private packages (default: false)"
         required: false
         type: boolean
+      script:
+        description: "Specify the npm/yarn script to run"
+        required: false
+        type: string
+        default: "npm run build"
 
 permissions:
   contents: write
   pull-requests: write
+  packages: read
 
 jobs:
   audit-fix:
@@ -40,28 +52,38 @@ jobs:
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: "20"
-          cache: "npm"
-      
+          cache: ${{ inputs.package_manager }}
+
       - name: Authenticate npm with GitHub Packages (if using private packages)
         if: inputs.use_private_packages == true
         run: |
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
           echo "@${{ github.repository_owner }}:registry=https://npm.pkg.github.com/" >> ~/.npmrc
 
-
       - name: Install dependencies
-        run: npm ci
-
-      - name: Run npm audit fix
         run: |
-          if [ "${{ inputs.force }}" == "true" ]; then
-            npm audit fix --force || echo "No fixes needed"
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            npm ci
           else
-            npm audit fix || echo "No fixes needed"
+            yarn install --frozen-lockfile
           fi
 
-      - name: Build Project
-        run: npm run build
+      - name: Run Audit Fix
+        run: |
+          if [ "${{ inputs.package_manager }}" == "npm" ]; then
+            if [ "${{ inputs.force }}" == "true" ]; then
+              npm audit fix --force || echo "No fixes needed"
+            else
+              npm audit fix || echo "No fixes needed"
+            fi
+          else
+            npx yarn-audit-fix || echo "No fixes needed"
+          fi
+
+      - name: Run Specified Build Script
+        run: |
+          SCRIPT="${{ inputs.script }}"
+          eval "$SCRIPT" || echo "No build script found or failed, skipping."
 
       - name: Check for Changes
         id: check_changes
@@ -88,19 +110,29 @@ jobs:
         if: env.changes == 'true'
         id: create_branch
         run: |
+          PACKAGE_MANAGER="${{ inputs.package_manager }}"
           FORCE_MODE="${{ inputs.force }}"
           BASE_BRANCH="${{ inputs.base_branch }}"
 
-          if [ "$FORCE_MODE" == "true" ]; then
-            BRANCH_NAME="npm-audit-fix-force-$(date +'%Y-%m-%d-%H-%M-%S')"
-            COMMIT_MESSAGE="fix: apply npm audit fix --force"
-            PR_TITLE="fix: Security updates via npm audit fix --force"
-            PR_BODY=$(echo "This PR applies security updates via npm audit fix --force.")
+          if [ "$PACKAGE_MANAGER" == "npm" ]; then
+            if [ "$FORCE_MODE" == "true" ]; then
+              BRANCH_NAME="npm-audit-fix-force-$(date +'%Y-%m-%d-%H-%M-%S')"
+              COMMIT_MESSAGE="fix: apply npm audit fix --force"
+              PR_TITLE="fix: Security updates via npm audit fix --force"
+              PR_BODY=$(echo "This PR applies security updates via npm audit fix --force.")
+
+            else
+              BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
+              COMMIT_MESSAGE="fix: apply npm audit fix"
+              PR_TITLE="fix: Security updates via npm audit fix"
+              PR_BODY=$(echo "This PR applies security updates via npm audit fix.")
+            fi
           else
-            BRANCH_NAME="npm-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
-            COMMIT_MESSAGE="fix: apply npm audit fix"
-            PR_TITLE="fix: Security updates via npm audit fix"
-            PR_BODY=$(echo "This PR applies security updates via npm audit fix.")
+            BRANCH_NAME="yarn-audit-fix-$(date +'%Y-%m-%d-%H-%M-%S')"
+            COMMIT_MESSAGE="fix: apply Yarn audit fix"
+            PR_TITLE="fix: Security updates via Yarn audit fix"
+            PR_BODY=$(echo "This PR applies security updates via yarn-audit-fix.")
+
           fi
 
           echo "Creating a new branch: $BRANCH_NAME..."
@@ -173,4 +205,3 @@ jobs:
           else
             echo "✅ Pull Request created: $PR_URL"
           fi
-
