@@ -55,11 +55,6 @@ jobs:
           node-version: "20"
           cache: ${{ inputs.package_manager }}
 
-      - name: Set up Git User
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-     
       - name: Authenticate npm with GitHub Packages (if using private packages)
         if: inputs.use_private_packages == true
         run: |
@@ -88,16 +83,47 @@ jobs:
           fi
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Reset & Force Update PR Branch
+      - name: Fetch PR Number (If Open)
+        id: fetch_pr
         run: |
-          git fetch origin
-          if git rev-parse --verify origin/${{ env.BRANCH_NAME }} >/dev/null 2>&1; then
-            echo "Branch ${{ env.BRANCH_NAME }} exists. Resetting..."
-            git checkout ${{ env.BRANCH_NAME }}
-            git reset --hard origin/${{ inputs.base_branch }}
+          EXISTING_PR_NUMBER=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" \
+            | jq -r --arg branch "${{ env.BRANCH_NAME }}" '.[] | select(.head.ref == $branch) | .number')
+
+          if [[ -n "$EXISTING_PR_NUMBER" && "$EXISTING_PR_NUMBER" != "null" ]]; then
+            echo "Existing open PR found: #$EXISTING_PR_NUMBER"
+            echo "EXISTING_PR_NUMBER=$EXISTING_PR_NUMBER" >> $GITHUB_ENV
           else
-            echo "Branch ${{ env.BRANCH_NAME }} does not exist. Creating..."
-            git checkout -b ${{ env.BRANCH_NAME }} origin/${{ inputs.base_branch }}
+            echo "No open PR found."
+            echo "EXISTING_PR_NUMBER=" >> $GITHUB_ENV
+          fi
+  
+      - name: Reset & Update PR Branch Using API
+        run: |
+          echo "🔍 Checking if branch ${{ env.BRANCH_NAME }} exists..."
+
+          BRANCH_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ env.BRANCH_NAME }}")
+
+          BRANCH_EXISTS=$(echo "$BRANCH_RESPONSE" | jq -r '.ref // empty')
+
+          BASE_COMMIT_SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }}" | jq -r '.object.sha')
+
+          if [[ -n "$BRANCH_EXISTS" ]]; then
+            echo "🔄 Branch ${{ env.BRANCH_NAME }} exists. Resetting to match ${{ inputs.base_branch }}"
+            curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"sha\": \"$BASE_COMMIT_SHA\", \"force\": true}" \
+              "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ env.BRANCH_NAME }}"
+            echo "✅ Branch ${{ env.BRANCH_NAME }} reset successfully."
+          else
+            echo "🆕 Branch ${{ env.BRANCH_NAME }} does not exist. Creating from ${{ inputs.base_branch }}..."
+            curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"ref\": \"refs/heads/${{ env.BRANCH_NAME }}\", \"sha\": \"$BASE_COMMIT_SHA\"}" \
+              "https://api.github.com/repos/${{ github.repository }}/git/refs"
+            echo "✅ New branch ${{ env.BRANCH_NAME }} created successfully."
           fi
 
       - name: Run Audit Fix
@@ -129,41 +155,67 @@ jobs:
             echo "changes=true" >> $GITHUB_ENV
           fi
 
-      - name: Commit and Force Push Changes
+      - name: Commit and Push Changes Using GitHub API
         if: env.changes == 'true'
         run: |
-          git commit -m "fix: apply audit fixes"
-          git push --force origin ${{ env.BRANCH_NAME }}
+          echo "Committing changes via GitHub API..."
+          FILES_CHANGED=$(git status --porcelain | awk '{print $2}')
+          for file in $FILES_CHANGED; do
+            echo "Processing file: $file"
 
-      - name: Check for Existing Open PR
-        if: env.changes == 'true'
-        id: check_pr
+            CONTENT=$(base64 -w 0 "$file")
+
+            SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }}" | jq -r .sha)
+            if [ "$SHA" == "null" ]; then SHA=""; fi
+
+            # Prepare commit payload
+            JSON_PAYLOAD=$(mktemp)
+            echo "{
+              \"message\": \"fix: apply audit fixes\",
+              \"content\": \"$CONTENT\",
+              \"branch\": \"${{ env.BRANCH_NAME }}\",
+              \"sha\": \"$SHA\"
+            }" > "$JSON_PAYLOAD"
+
+            curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              --data-binary @"$JSON_PAYLOAD" \
+              "https://api.github.com/repos/${{ github.repository }}/contents/$file"
+
+            echo "✅ File committed: $file"
+          done
+
+          echo "✅ All changes committed successfully."
+
+      - name: Reopen PR If It Was Closed
+        if: env.changes == 'true' && env.EXISTING_PR_NUMBER != ''
         run: |
-          EXISTING_PR=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open" \
-            | jq -r --arg branch "${{ env.BRANCH_NAME }}" '.[] | select(.head.ref == $branch) | .number')
+          PR_STATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.EXISTING_PR_NUMBER }}" \
+            | jq -r '.state')
 
-          if [[ -n "$EXISTING_PR" && "$EXISTING_PR" != "null" ]]; then
-            echo "Existing PR found: #$EXISTING_PR"
-            echo "PR_NUMBER=$EXISTING_PR" >> $GITHUB_ENV
+          if [[ "$PR_STATE" == "closed" ]]; then
+            echo "🔄 Reopening closed PR #${{ env.EXISTING_PR_NUMBER }}..."
+            curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d '{"state": "open"}' \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.EXISTING_PR_NUMBER }}"
+            echo "✅ PR #${{ env.EXISTING_PR_NUMBER }} reopened."
           else
-            echo "No existing PR found."
-            echo "PR_NUMBER=" >> $GITHUB_ENV
+            echo "PR #${{ env.EXISTING_PR_NUMBER }} is already open."
           fi
+          echo "PR_NUMBER=${{ env.EXISTING_PR_NUMBER }}" >> $GITHUB_ENV
 
-      - name: Create Pull Request (if not existing)
-        if: env.changes == 'true' && env.PR_NUMBER == ''
+
+      - name: Create PR (If Not Existing)
+        if: env.changes == 'true' && env.EXISTING_PR_NUMBER == ''
         run: |
-          echo "Creating a new pull request..."
+          echo "No existing PR found. Creating new PR..."
           PR_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            -d "{
-              \"title\": \"fix: Security updates via ${{ env.BRANCH_NAME }}\",
-              \"body\": \"This PR applies security updates via audit fix.\",
-              \"head\": \"${{ env.BRANCH_NAME }}\",
-              \"base\": \"${{ inputs.base_branch }}\",
-              \"draft\": false
-            }" "https://api.github.com/repos/${{ github.repository }}/pulls")
+            -d "{ \"title\": \"fix: Security updates\", \"head\": \"${{ env.BRANCH_NAME }}\", \"base\": \"${{ inputs.base_branch }}\", \"draft\": false }" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls")
 
           PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.number')
           PR_URL=$(echo "$PR_RESPONSE" | jq -r '.html_url')
@@ -266,9 +318,14 @@ jobs:
           PR_COMMENT_BODY+="**OSV Scanner Findings:**\n\`\`\`\n$(echo $PENDING_VULNS | base64 -d | jq -r '.[].id')\n\`\`\`\n\n"
           PR_COMMENT_BODY+="@${{ github.repository_owner }}/maintained-actions-dev, please investigate."
 
-          EXISTING_COMMENT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments" \
-            | jq -r '[.[] | select(.body | contains("Post-audit scan detected remaining vulnerabilities"))] | last | .id')
+          COMMENTS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments")
+
+          if echo "$COMMENTS_RESPONSE" | jq -e 'type == "array"' >/dev/null; then
+            EXISTING_COMMENT_ID=$(echo "$COMMENTS_RESPONSE" | jq -r '[.[] | select(.body | contains("Post-audit scan detected remaining vulnerabilities"))] | last | .id')
+          else
+            EXISTING_COMMENT_ID=""
+          fi
 
           if [[ -n "$EXISTING_COMMENT_ID" && "$EXISTING_COMMENT_ID" != "null" ]]; then
             echo "🔄 Updating existing PR comment..."
