@@ -73,7 +73,7 @@ jobs:
         id: set_branch
         run: |
           if [ "${{ inputs.package_manager }}" == "npm" ]; then
-            if [ "${{ inputs.force }}" == "true" ]; then
+            if ${{ inputs.force }}; then
               BRANCH_NAME="npm-audit-fix-force"
             else
               BRANCH_NAME="npm-audit-fix"
@@ -129,7 +129,7 @@ jobs:
       - name: Run Audit Fix
         run: |
           if [ "${{ inputs.package_manager }}" == "npm" ]; then
-            if [ "${{ inputs.force }}" == "true" ]; then
+            if ${{ inputs.force }}; then
               npm audit fix --force || echo "No fixes needed"
             else
               npm audit fix || echo "No fixes needed"
