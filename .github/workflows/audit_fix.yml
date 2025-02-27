@@ -68,6 +68,11 @@ jobs:
           else
             yarn install --frozen-lockfile
           fi
+  
+      - name: Debug Inputs
+        run: |
+          echo "Debug: inputs.force = '${{ inputs.force }}'"
+          echo "Debug: inputs.package_manager = '${{ inputs.package_manager }}'"
 
       - name: Determine Branch Name
         id: set_branch
