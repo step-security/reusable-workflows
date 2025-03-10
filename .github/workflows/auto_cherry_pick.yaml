@@ -233,15 +233,13 @@ jobs:
             for file in $FILTERED_FILES; do
                 echo "Processing file: $file"
 
-                FILE_RESPONSE=$(gh api "repos/$TARGET_REPO/contents/$file?ref=$BRANCH" 2>/dev/null || true)
-                SHA=$(echo "$FILE_RESPONSE" | jq -r .sha 2>/dev/null)
+                FILE_RESPONSE=$(gh api "repos/$TARGET_REPO/contents/$file?ref=$BRANCH")
 
-                if [ -z "$SHA" ] || [ "$SHA" == "null" ]; then
-                  echo "⚠️ File $file does not exist in target repo. Creating it..."
-                  echo "" > temp_file.txt
-                else
-                  BASE64_CONTENT=$(echo "$FILE_RESPONSE" | jq -r '.content' | base64 --decode)
-                  echo "$BASE64_CONTENT" > temp_file.txt
+                BASE64_CONTENT=$(echo "$FILE_RESPONSE" | jq -r '.content' | base64 --decode)
+
+                if [ -z "$BASE64_CONTENT" ] || [ "$BASE64_CONTENT" == "null" ]; then
+                    echo "⚠️ Skipping file $file (could not fetch content)."
+                    continue
                 fi
 
                 PATCH=$(echo "$COMMIT_DETAILS" | jq -r '.files[] | select(.filename=="'$file'") | .patch')
@@ -251,23 +249,25 @@ jobs:
                     continue
                 fi
 
+                echo "$BASE64_CONTENT" > temp_file.txt
                 echo "$PATCH" > temp_patch.diff
+
                 patch temp_file.txt < temp_patch.diff
                 PATCH_EXIT_CODE=$?
 
                 if [ "$PATCH_EXIT_CODE" -ne 0 ]; then
                   echo "❌ Conflict detected while applying patch to $file."
+                  echo "Skipping this file and marking commit as skipped."
                   SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
                   continue
                 fi
 
-                # Commit the patched file via GitHub API
                 UPDATED_CONTENT=$(base64 -w 0 temp_file.txt)
 
                 COMMIT_PAYLOAD=$(jq -n --arg msg "$COMMIT_MESSAGE" \
                     --arg content "$UPDATED_CONTENT" \
                     --arg branch "$BRANCH" \
-                    --arg sha "$SHA" \
+                    --arg sha "$(echo "$FILE_RESPONSE" | jq -r .sha)" \
                     '{
                       "message": $msg,
                       "content": $content,
@@ -289,7 +289,7 @@ jobs:
                 fi
             done
 
-          done <<< "$NEW_COMMITS_REVERSED"
+          done <<< "${{ env.NEW_COMMITS }}"
 
           if [ "$CHANGES_FOUND" = false ]; then
             echo "No changes after cherry-pick. Skipping further steps."
@@ -302,7 +302,6 @@ jobs:
           echo "SKIPPED_COMMITS<<EOF" >> $GITHUB_ENV
           echo -e "$SKIPPED_COMMITS" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-
 
       - name: Set Up Node.js
         if: env.action_type == 'node'
