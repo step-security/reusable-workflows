@@ -117,7 +117,7 @@ jobs:
       - name: Get New Commits from Upstream
         run: |
           echo "Fetching new commits from upstream since: ${{ env.LAST_SYNC_DATE }}"
-          NEW_COMMITS=$(git log --since="${{ env.LAST_SYNC_DATE }}" --pretty=format:'%H' upstream/${{ env.DEFAULT_BRANCH }} || true)
+          NEW_COMMITS=$(git log --since="${{ env.LAST_SYNC_DATE }}" --pretty=format:'%H' --reverse upstream/${{ env.DEFAULT_BRANCH }} || true)
           
           if [ -z "$NEW_COMMITS" ]; then
             echo "✅ No new commits found. Skipping cherry-pick."
@@ -200,8 +200,6 @@ jobs:
 
           SKIPPED_COMMITS=""
           CHANGES_FOUND=false
-
-          NEW_COMMITS_REVERSED=$(echo "${{ env.NEW_COMMITS }}" | tac)
 
           while read -r COMMIT_HASH; do
             echo "Processing commit: $COMMIT_HASH"
