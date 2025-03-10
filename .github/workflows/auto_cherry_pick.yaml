@@ -223,7 +223,7 @@ jobs:
             MODIFIED_FILES=$(echo "$COMMIT_DETAILS" | jq -r '.files[].filename')
 
             # Ignore package.json, package-lock.json, yarn.lock, node_modules/
-            FILTERED_FILES=$(echo "$MODIFIED_FILES" | grep -Ev "^package.json$|^package-lock.json$|^yarn.lock$|^node_modules/")
+            FILTERED_FILES=$(echo "$MODIFIED_FILES" | grep -Ev "^package.json$|^package-lock.json$|^yarn.lock$|^node_modules/|^.gitignore")
 
             if [ -z "$FILTERED_FILES" ]; then
               echo "⚠️ Skipping commit $COMMIT_HASH as it only contains ignored changes."
