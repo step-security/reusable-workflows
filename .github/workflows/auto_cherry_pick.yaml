@@ -1,7 +1,7 @@
 name: Auto Cherry-Pick from Upstream
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       original-owner:
         description: "Owner of the original repository"
