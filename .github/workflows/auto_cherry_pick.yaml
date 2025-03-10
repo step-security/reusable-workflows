@@ -210,7 +210,13 @@ jobs:
             fi
 
             # Fetch commit details
-            COMMIT_DETAILS=$(gh api "repos/$UPSTREAM_REPO/commits/$COMMIT_HASH")
+            COMMIT_DETAILS=$(gh api "repos/$UPSTREAM_REPO/commits/$COMMIT_HASH" || true)
+
+            if [ -z "$COMMIT_DETAILS" ] || [ "$COMMIT_DETAILS" == "null" ]; then
+              echo "❌ Failed to fetch commit details for $COMMIT_HASH. Skipping."
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+              continue
+            fi
 
             COMMIT_MESSAGE=$(echo "$COMMIT_DETAILS" | jq -r '.commit.message')
 
@@ -222,11 +228,11 @@ jobs:
 
             MODIFIED_FILES=$(echo "$COMMIT_DETAILS" | jq -r '.files[].filename')
 
-            # Ignore package.json, package-lock.json, yarn.lock, node_modules/
+            # Ignore package.json, package-lock.json, yarn.lock, node_modules/, and .gitignore
             FILTERED_FILES=$(echo "$MODIFIED_FILES" | grep -Ev "^package.json$|^package-lock.json$|^yarn.lock$|^node_modules/|^.gitignore")
 
             if [ -z "$FILTERED_FILES" ]; then
-              echo "⚠️ Skipping commit $COMMIT_HASH as it only contains ignored changes."
+              echo "⚠️ Skipping commit $COMMIT_HASH as it only contains ignored file changes."
               SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
               continue
             fi
@@ -303,7 +309,6 @@ jobs:
           echo "SKIPPED_COMMITS<<EOF" >> $GITHUB_ENV
           echo -e "$SKIPPED_COMMITS" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-
 
       - name: Set Up Node.js
         if: env.action_type == 'node'
