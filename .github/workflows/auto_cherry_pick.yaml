@@ -246,6 +246,8 @@ jobs:
               continue
             fi
 
+            SKIPPED_CURRENT_COMMIT=false
+
             for file in $FILTERED_FILES; do
                 echo "Processing file: $file"
 
@@ -271,12 +273,9 @@ jobs:
                 fi
 
                 echo "$PATCH" > temp_patch.diff
-                patch --forward temp_file.txt < temp_patch.diff
-                PATCH_EXIT_CODE=$?
-
-                if [ "$PATCH_EXIT_CODE" -ne 0 ]; then
-                  echo "❌ Conflict detected while applying patch to $file."
-                  SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+                if ! patch --forward temp_file.txt < temp_patch.diff; then
+                  echo "❌ Conflict detected while applying patch to $file. Skipping..."
+                  SKIPPED_CURRENT_COMMIT=true
                   continue
                 fi
 
@@ -300,12 +299,16 @@ jobs:
 
                 if [ "$RESPONSE" == "ERROR" ] || ! echo "$RESPONSE" | jq -e '.content' > /dev/null; then
                   echo "❌ Failed to commit changes for $file."
-                  SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+                  SKIPPED_CURRENT_COMMIT=true
                 else
                   echo "✅ Applied patch and updated file: $file"
                   CHANGES_FOUND=true
                 fi
             done
+
+            if [[ "$SKIPPED_CURRENT_COMMIT" == "true" ]]; then
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+            fi
 
           done <<< "${{ env.NEW_COMMITS }}"
 
