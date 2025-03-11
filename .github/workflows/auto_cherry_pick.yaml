@@ -355,6 +355,7 @@ jobs:
         if: env.action_type == 'node' && env.CHANGES == 'true'
         run: |
           eval "${{ inputs.script }}" || echo "No build script found or failed, skipping."
+          git add .
           
           FILES_CHANGED=$(git status --porcelain | awk '{print $2}' | grep -Ev 'temp_file.txt|temp_patch.diff|temp_patch.txt|.*\.rej' || true)
           
