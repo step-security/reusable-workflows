@@ -185,9 +185,25 @@ jobs:
         with:
           app_id: ${{ secrets.app_id }}
           private_key: ${{ secrets.private_key }}
+          repository: ${{ github.repository }} # 🛑 this is CRITICAL to scope correctly
+
+      - name: Debug token identity
+        run: |
+          echo "🔐 Verifying App token identity..."
+          curl -s -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/user | jq .
+
+      - name: List installations for app (optional)
+        run: |
+          curl -s -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/installation/repositories | jq .
 
       - name: Create and Push Tag
         run: |
+          git config user.name "GitHub App"
+          git config user.email "app@example.com"
           git tag ${{ github.event.inputs.tag }}
           git push https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }} ${{ github.event.inputs.tag }}
 
