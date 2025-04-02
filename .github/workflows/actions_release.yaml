@@ -173,8 +173,8 @@ jobs:
         id: app-token
         uses: tibdex/github-app-token@v1
         with:
-          app_id: ${{ secrets.APP_ID }}
-          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          app_id: ${{ secrets.app_id }}
+          private_key: ${{ secrets.private_key }}
 
       - name: Create and Push Tag
         run: |
