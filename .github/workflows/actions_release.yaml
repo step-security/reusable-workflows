@@ -225,11 +225,15 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag }}"
           SEMANTIC_TAG=$(echo "$TAG" | grep -oP '^v\d+')
+
+          # Ensure all tags are available
+          git fetch --tags
+
           SHA=$(git rev-parse "$TAG")
 
           echo "Updating semantic tag $SEMANTIC_TAG to point to $SHA"
 
-          # Delete the existing semantic tag if it exists (ignore error if not found)
+          # Delete the existing semantic tag if it exists
           curl -s -X DELETE \
             -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
             -H "Accept: application/vnd.github+json" \
@@ -241,6 +245,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ github.repository }}/git/refs \
             -d "{\"ref\": \"refs/tags/$SEMANTIC_TAG\", \"sha\": \"$SHA\"}"
+
 
       - name: Generate and Upload Provenance File
         run: |
