@@ -221,14 +221,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update Semantic Tag
+      - name: Update Semantic Tag via GitHub API
         run: |
-          TAG=${{ github.event.inputs.tag }}
-          SEMANTIC_TAG=$(echo $TAG | grep -oP '^v\d+')
-          git tag -f $SEMANTIC_TAG $TAG
-          git push -f origin $SEMANTIC_TAG
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG="${{ github.event.inputs.tag }}"
+          SEMANTIC_TAG=$(echo "$TAG" | grep -oP '^v\d+')
+          SHA=$(git rev-parse "$TAG")
+
+          echo "Updating semantic tag $SEMANTIC_TAG to point to $SHA"
+
+          # Delete the existing semantic tag if it exists (ignore error if not found)
+          curl -s -X DELETE \
+            -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$SEMANTIC_TAG || true
+
+          # Create the new semantic tag
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/git/refs \
+            -d "{\"ref\": \"refs/tags/$SEMANTIC_TAG\", \"sha\": \"$SHA\"}"
 
       - name: Generate and Upload Provenance File
         run: |
