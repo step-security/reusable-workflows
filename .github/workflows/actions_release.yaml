@@ -164,13 +164,6 @@ jobs:
           output-file: ./sbom-${{ github.event.inputs.tag }}.spdx.json
           format: "spdx"
 
-      - name: Create and Push Tag
-        run: |
-          git tag ${{ github.event.inputs.tag }}
-          git push origin ${{ github.event.inputs.tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create GitHub Release
         run: gh release create ${{ github.event.inputs.tag }} --generate-notes
         env:
