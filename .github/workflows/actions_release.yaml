@@ -173,6 +173,12 @@ jobs:
           echo "APP_ID is: ${{ secrets.app_id != '' && '✅ Available' || '❌ Missing' }}"
           echo "PRIVATE_KEY is: ${{ secrets.private_key != '' && '✅ Available' || '❌ Missing' }}"
 
+      - name: Debug Secrets Availability
+        run: |
+          echo "APP_ID: ${{ secrets.app_id }}"
+          echo "PRIVATE_KEY (first 2 lines):"
+          echo "${{ secrets.private_key }}" | head -n 2
+
       - name: Generate GitHub App Token
         id: app-token
         uses: tibdex/github-app-token@v1
