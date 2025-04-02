@@ -11,6 +11,12 @@ on:
         required: false
         type: string
         default: "npm run build"
+      app_id:
+        required: true
+        type: string
+      private_key:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -176,7 +182,7 @@ jobs:
           git config user.name "GitHub App Bot"
           git config user.email "app@example.com"
           git tag ${{ github.event.inputs.tag }}
-          git push origin ${{ github.event.inputs.tag }}
+          git push https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }} ${{ github.event.inputs.tag }}
 
       - name: Create GitHub Release
         run: gh release create ${{ github.event.inputs.tag }} --generate-notes
