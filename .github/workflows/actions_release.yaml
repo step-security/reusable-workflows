@@ -11,12 +11,11 @@ on:
         required: false
         type: string
         default: "npm run build"
+    secrets:
       app_id:
         required: true
-        type: string
       private_key:
         required: true
-        type: string
 
 permissions:
   contents: read
