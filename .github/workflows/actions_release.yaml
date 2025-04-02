@@ -168,7 +168,6 @@ jobs:
           path: "./"
           output-file: ./sbom-${{ github.event.inputs.tag }}.spdx.json
           format: "spdx"
-          
       - name: Debug Secrets Availability
         run: |
           echo "APP_ID is: ${{ secrets.app_id != '' && '✅ Available' || '❌ Missing' }}"
@@ -183,8 +182,6 @@ jobs:
 
       - name: Create and Push Tag
         run: |
-          git config user.name "GitHub App Bot"
-          git config user.email "app@example.com"
           git tag ${{ github.event.inputs.tag }}
           git push https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/${{ github.repository }} ${{ github.event.inputs.tag }}
 
