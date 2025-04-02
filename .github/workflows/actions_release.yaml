@@ -168,16 +168,6 @@ jobs:
           path: "./"
           output-file: ./sbom-${{ github.event.inputs.tag }}.spdx.json
           format: "spdx"
-      - name: Debug Secrets Availability
-        run: |
-          echo "APP_ID is: ${{ secrets.app_id != '' && '✅ Available' || '❌ Missing' }}"
-          echo "PRIVATE_KEY is: ${{ secrets.private_key != '' && '✅ Available' || '❌ Missing' }}"
-
-      - name: Debug Secrets Availability
-        run: |
-          echo "APP_ID: ${{ secrets.app_id }}"
-          echo "PRIVATE_KEY (first 2 lines):"
-          echo "${{ secrets.private_key }}" | head -n 2
 
       - name: Generate GitHub App Token
         id: app-token
@@ -185,21 +175,6 @@ jobs:
         with:
           app_id: ${{ secrets.app_id }}
           private_key: ${{ secrets.private_key }}
-          repository: ${{ github.repository }} # 🛑 this is CRITICAL to scope correctly
-
-      - name: Debug token identity
-        run: |
-          echo "🔐 Verifying App token identity..."
-          curl -s -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/installation/repositories | jq .
-
-
-      - name: List installations for app (optional)
-        run: |
-          curl -s -H "Authorization: Bearer ${{ steps.app-token.outputs.token }}" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/installation/repositories | jq .
 
       - name: Create tag via GitHub API
         run: |
