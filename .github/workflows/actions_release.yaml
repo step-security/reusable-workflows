@@ -11,6 +11,9 @@ on:
         required: false
         type: string
         default: "npm run build"
+      yarn_version:
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -81,7 +84,18 @@ jobs:
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
           node-version: '20'
-      
+
+      - name: Install specific Yarn version if defined
+        if: ${{ inputs.yarn_version != '' && env.action_type == 'node' }}
+        run: |
+          if [ -f yarn.lock ]; then
+            corepack enable
+            corepack prepare "yarn@${{ inputs.yarn_version }}" --activate
+            echo "Activated Yarn version ${{ inputs.yarn_version }}"
+          else
+            echo "Skipped Yarn installation – yarn.lock not found"
+          fi
+  
       - name: Install dependencies
         if: env.action_type == 'node'
         run: |
