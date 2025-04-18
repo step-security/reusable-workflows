@@ -414,34 +414,27 @@ jobs:
           FILES_CHANGED=$(git status --porcelain | awk '{print $2}' | grep -Ev 'temp_file.txt|temp_patch.diff|temp_patch.txt|.*\.rej' || true)
           echo "Processing file: $FILES_CHANGED"
 
-          
+
           if [ -z "$FILES_CHANGED" ]; then
             echo "No changes detected."
           else
-            echo "Committing changes via GitHub CLI..."
+            echo "Committing changes via gh CLI..."
 
             for file in $FILES_CHANGED; do
               echo "Processing file: $file"
 
               CONTENT=$(base64 -w 0 "$file")
 
-              SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                "https://api.github.com/repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }}" | jq -r .sha)
+              FILE_RESPONSE=$(gh api "repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }}" 2>/dev/null || echo "")
+              SHA=$(echo "$FILE_RESPONSE" | jq -r .sha 2>/dev/null || echo "")
               if [ "$SHA" == "null" ]; then SHA=""; fi
 
-              # Prepare commit payload
-              JSON_PAYLOAD=$(mktemp)
-              echo "{
-                \"message\": \"fix: apply code build script\",
-                \"content\": \"$CONTENT\",
-                \"branch\": \"${{ env.BRANCH_NAME }}\",
-                \"sha\": \"$SHA\"
-              }" > "$JSON_PAYLOAD"
-
-              curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              gh api --method PUT "repos/${{ github.repository }}/contents/$file" \
                 -H "Accept: application/vnd.github.v3+json" \
-                --data-binary @"$JSON_PAYLOAD" \
-                "https://api.github.com/repos/${{ github.repository }}/contents/$file"
+                -f message="fix: apply code build script" \
+                -f content="$CONTENT" \
+                -f branch="${{ env.BRANCH_NAME }}" \
+                ${SHA:+-f sha="$SHA"}
 
               echo "✅ File committed: $file"
             done
