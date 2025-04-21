@@ -1,0 +1,76 @@
+name: GuardDog Full Security Scan
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  guarddog:
+    name: GuardDog - Full Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install GuardDog
+        run: pip install guarddog
+
+      - name: 🐶 Local files scan
+        id: local_scan
+        run: |
+          guarddog npm scan . --output-format json > guarddog_local.json
+          cat guarddog_local.json
+
+          count=$(jq '[.results[] | select(length > 0)] | length' guarddog_local.json)
+          echo "count=$count" >> $GITHUB_OUTPUT
+          if [ "$count" -gt 0 ]; then
+            echo "❌ GuardDog found $count local issue(s)"
+            cat guarddog_local.json
+            exit 1
+          else
+            echo "✅ No local issues found"
+          fi
+
+      - name: 🔍 Dependency scan (package.json)
+        run: |
+          guarddog npm verify ./package.json --output-format json > guarddog_deps.json
+          cat guarddog_deps.json
+
+          count=$(jq '[.[] | select(.result.issues > 0)] | length' guarddog_deps.json)
+          echo "Dependency issues found: $count"
+
+          if [ "$count" -gt 0 ]; then
+            echo "❌ GuardDog found $count dependency issue(s)"
+            echo ""
+            echo "📋 Summary of issues:"
+            echo "-----------------------------------"
+
+          jq -r '
+            .[]
+            | select(.result.issues > 0)
+            | "🔸 \(.dependency)@\(.version)",
+              (
+                .result.results
+                | to_entries[]
+                | select(
+                    (.value | type == "array" and length > 0)
+                    or
+                    (.value | type == "string" and length > 0)
+                  )
+                | { (.key): .value } | @json
+              ), ""
+          ' guarddog_deps.json
+
+            exit 1
+          else
+            echo "✅ No dependency issues found"
+          fi
