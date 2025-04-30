@@ -26,27 +26,30 @@ jobs:
 
       - name: 🐶 Local files scan
         id: local_scan
+        continue-on-error: true
         run: |
           guarddog npm scan . --output-format json > guarddog_local.json
           cat guarddog_local.json
 
           count=$(jq '[.results[] | select(length > 0)] | length' guarddog_local.json)
           echo "count=$count" >> $GITHUB_OUTPUT
+          echo "local_issue_count=$count" >> $GITHUB_ENV
+
           if [ "$count" -gt 0 ]; then
             echo "❌ GuardDog found $count local issue(s)"
-            cat guarddog_local.json
-            exit 1
           else
             echo "✅ No local issues found"
           fi
 
       - name: 🔍 Dependency scan (package.json)
+        id: dep_scan
+        continue-on-error: true
         run: |
           guarddog npm verify ./package.json --output-format json > guarddog_deps.json
           cat guarddog_deps.json
 
           count=$(jq '[.[] | select(.result.issues > 0)] | length' guarddog_deps.json)
-          echo "Dependency issues found: $count"
+          echo "dep_issue_count=$count" >> $GITHUB_ENV
 
           if [ "$count" -gt 0 ]; then
             echo "❌ GuardDog found $count dependency issue(s)"
@@ -69,8 +72,15 @@ jobs:
                 | { (.key): .value } | @json
               ), ""
           ' guarddog_deps.json
-
-            exit 1
           else
             echo "✅ No dependency issues found"
+          fi
+
+      - name: 🔴 Fail if any issues found
+        run: |
+          if [ "${local_issue_count}" -gt 0 ] || [ "${dep_issue_count}" -gt 0 ]; then
+            echo "🚨 GuardDog found issues in scan(s)"
+            exit 1
+          else
+            echo "✅ All scans passed"
           fi
