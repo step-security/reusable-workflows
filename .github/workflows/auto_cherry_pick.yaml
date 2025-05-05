@@ -448,23 +448,15 @@ jobs:
 
               CONTENT=$(base64 -w 0 "$file")
 
-              SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                "https://api.github.com/repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }}" | jq -r .sha)
-              if [ "$SHA" == "null" ]; then SHA=""; fi
+              SHA=$(gh api "repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }}" --jq .sha 2>/dev/null || echo "")
+              if [ "$SHA" = "null" ]; then SHA=""; fi
 
-              # Prepare commit payload
-              JSON_PAYLOAD=$(mktemp)
-              echo "{
-                \"message\": \"fix: apply code build script\",
-                \"content\": \"$CONTENT\",
-                \"branch\": \"${{ env.BRANCH_NAME }}\",
-                \"sha\": \"$SHA\"
-              }" > "$JSON_PAYLOAD"
-
-              curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                -H "Accept: application/vnd.github.v3+json" \
-                --data-binary @"$JSON_PAYLOAD" \
-                "https://api.github.com/repos/${{ github.repository }}/contents/$file"
+              gh api --method PUT "repos/${{ github.repository }}/contents/$file" \
+                --header "Accept: application/vnd.github.v3+json" \
+                --field message="fix: apply code build script" \
+                --field content="$CONTENT_BASE64" \
+                --field branch="${{ env.BRANCH_NAME }}" \
+                ${SHA:+--field sha="$SHA"}
 
               echo "✅ File committed: $file"
             done
