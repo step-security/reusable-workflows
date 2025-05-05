@@ -151,7 +151,7 @@ jobs:
           found=false
           UPSTREAM_OWNER="${{ inputs.original-owner }}"
           UPSTREAM_REPO="${{ inputs.repo-name }}"
-          SEMVER_REGEX="^v([1-9][0-9]*|0)\.([1-9][0-9]*|0)\.([1-9][0-9]*|0)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
+          SEMVER_REGEX="^v([1-9][0-9]*|0)\.([1-9][0-9]*|0)(\.([1-9][0-9]*|0))?(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
 
           while IFS=$'\t' read -r tag date; do
             if [[ "$tag" =~ $SEMVER_REGEX ]]; then
