@@ -112,32 +112,48 @@ jobs:
           ISSUE_TITLE="Tracking Last Sync Date"
           ISSUE_NUMBER=$(gh issue list --repo "$REPO" --state open --json number,title \
             --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number")
+          
           LAST_SYNC_DATE=""
+          RELEASE_VERSION_TYPE="vx.x.x"
+
           if [[ -n "$ISSUE_NUMBER" ]]; then
             echo "✅ Found existing sync tracking issue #$ISSUE_NUMBER."
-            LAST_SYNC_DATE=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body \
-              --jq '.body' | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z')
-            echo "📌 Last Sync Date from issue: $LAST_SYNC_DATE"
-          else
-            echo "⚠️ No tracking issue found. Checking latest release for fallback..."
-            LATEST_RELEASE_DATE=$(gh release list --limit 1 --json publishedAt --jq '.[0].publishedAt')
-            if [[ -z "$LATEST_RELEASE_DATE" ]]; then
-              echo "⚠️ No releases found. Falling back to 1 month ago."
-              LATEST_RELEASE_DATE=$(date -u --date='-1 month' +'%Y-%m-%dT%H:%M:%SZ')
+            ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq '.body')
+
+            # Extract values from body
+            LAST_SYNC_DATE=$(echo "$ISSUE_BODY" | grep -oE 'Last Sync Date: [0-9TZ:-]+' | cut -d' ' -f4)
+            if echo "$ISSUE_BODY" | grep -q "Release Version Type:"; then
+              RELEASE_VERSION_TYPE=$(echo "$ISSUE_BODY" | grep -oE 'Release Version Type: [a-z\.]+' | cut -d' ' -f4)
+              echo "📌 Release Version Type: $RELEASE_VERSION_TYPE"
+            else
+              echo "⚠️ 'Release Version Type' not found in issue body. Defaulting to vx.x.x"
+              RELEASE_VERSION_TYPE="vx.x.x"
             fi
-            echo "🆕 Creating new tracking issue with sync date: $LATEST_RELEASE_DATE"
-            ISSUE_URL=$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" \
-              --body "Last Sync Date: $LATEST_RELEASE_DATE" | grep -oE 'https://github.com/[^ ]+')
+
+            echo "📌 Last Sync Date: $LAST_SYNC_DATE"
+            echo "📌 Release Version Type: $RELEASE_VERSION_TYPE"
+          else
+            echo "⚠️ No tracking issue found. Creating one..."
+
+            RELEASE_VERSION_TYPE="vx.x.x"
+            LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')  # current timestamp
+
+            BODY=$(printf "Last Sync Date: %s\nRelease Version Type: %s" "$LAST_SYNC_DATE" "$RELEASE_VERSION_TYPE")
+
+            ISSUE_URL=$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$BODY" | grep -oE 'https://github.com/[^ ]+')
             if [[ -z "$ISSUE_URL" ]]; then
               echo "❌ Failed to create issue."
               exit 1
             fi
+
             ISSUE_NUMBER=$(basename "$ISSUE_URL")
-            LAST_SYNC_DATE=$LATEST_RELEASE_DATE
             echo "✅ Created new tracking issue #$ISSUE_NUMBER at $ISSUE_URL"
           fi
+
           echo "LAST_SYNC_DATE=$LAST_SYNC_DATE" >> $GITHUB_ENV
           echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> $GITHUB_ENV
+          echo "RELEASE_VERSION_TYPE=$RELEASE_VERSION_TYPE" >> $GITHUB_ENV
+
 
       - name: Get New Commits from Release After LAST_SYNC_DATE
         env:
@@ -151,7 +167,22 @@ jobs:
           found=false
           UPSTREAM_OWNER="${{ inputs.original-owner }}"
           UPSTREAM_REPO="${{ inputs.repo-name }}"
-          SEMVER_REGEX="^v([1-9][0-9]*|0)\.([1-9][0-9]*|0)(\.([1-9][0-9]*|0))?(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$"
+
+          case "$RELEASE_VERSION_TYPE" in
+            vx.x.x)
+              SEMVER_REGEX="^v([0-9]+)\.([0-9]+)\.([0-9]+)$"
+              ;;
+            vx.x)
+              SEMVER_REGEX="^v([0-9]+)\.([0-9]+)$"
+              ;;
+            vx)
+              SEMVER_REGEX="^v([0-9]+)$"
+              ;;
+            *)
+              echo "❌ Unknown RELEASE_VERSION_TYPE: $RELEASE_VERSION_TYPE"
+              exit 1
+              ;;
+          esac
 
           while IFS=$'\t' read -r tag date; do
             if [[ "$tag" =~ $SEMVER_REGEX ]]; then
