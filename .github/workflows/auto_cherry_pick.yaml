@@ -574,8 +574,16 @@ jobs:
             echo "❌ Error: No release date found. Cannot update sync date."
             exit 1
           fi
-          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body "Last Sync Date: $SYNC_DATE"
-          echo "✅ Updated issue #$ISSUE_NUMBER with release sync date: $SYNC_DATE"
+
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq '.body')
+          if echo "$ISSUE_BODY" | grep -q "Last Sync Date:"; then
+            UPDATED_BODY=$(echo "$ISSUE_BODY" | sed -E "s|Last Sync Date: .*|Last Sync Date: $SYNC_DATE|")
+          else
+            UPDATED_BODY=$(printf "%s\nLast Sync Date: %s" "$ISSUE_BODY" "$SYNC_DATE")
+          fi
+
+          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body "$UPDATED_BODY"
+          echo "✅ Updated issue #$ISSUE_NUMBER with new sync date: $SYNC_DATE"
 
       - name: Comment on PR with Updates via gh CLI
         if: env.PR_NUMBER != ''
