@@ -30,6 +30,9 @@ on:
         required: false
         type: string
         default: "npm"
+      yarn_version:
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -431,6 +434,13 @@ jobs:
           echo "WORKFLOW_FILES<<EOF" >> $GITHUB_ENV
           echo -e "$WORKFLOW_FILES" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+
+      - name: Install specific Yarn version if defined
+        if: ${{ inputs.package_manager == 'yarn' && inputs.yarn_version != '' }}
+        run: |
+          corepack enable
+          corepack prepare "yarn@${{ inputs.yarn_version }}" --activate
+          echo "Activated Yarn version ${{ inputs.yarn_version }}"
 
       - name: Set Up Node.js
         if: env.action_type == 'node'
