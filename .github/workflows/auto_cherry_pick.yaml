@@ -474,7 +474,6 @@ jobs:
 
       - name: Run Specified Build Script and Commit Changes via gh CLI
         if: env.action_type == 'node' && env.CHANGES == 'true'
-        shell: bash
         run: |
           git fetch origin
           git checkout "${{ env.BRANCH_NAME }}"
@@ -490,15 +489,12 @@ jobs:
           else
             echo "▶️ Running build script: $SCRIPT_INPUT"
 
-            set +e  # 🔥 disable automatic exit on failure
+            set +e  # disable automatic exit on failure
             eval "$SCRIPT_INPUT"
             BUILD_EXIT_CODE=$?
-            set -e  # 🔒 (optional) re-enable for safety if needed later
-
-            echo "Script exited with code: $BUILD_EXIT_CODE"
+            set -e  # re-enabling the same
 
             if [ $BUILD_EXIT_CODE -ne 0 ]; then
-              echo "❌ Build script failed with exit code $BUILD_EXIT_CODE"
               echo "build_failed=true" >> $GITHUB_ENV
               build_failed=true
             else
@@ -511,9 +507,6 @@ jobs:
             echo "⚠️ Skipping commit step due to build failure or skip"
             exit 0
           fi
-
-          # ... your commit logic goes here ...
-
 
           git add .
           
