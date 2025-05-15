@@ -26,15 +26,22 @@ on:
         type: string
         default: "npm run build"
       package_manager:
-        description: "Specify package manager if available (npm or yarn)"
+        description: "Specify package manager if available (npm or yarn or pnpm)"
         required: false
         type: string
         default: "npm"
+      yarn_version:
+        required: false
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   packages: read
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   check-upstream:
@@ -51,6 +58,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check for Existing Cherry-Pick PR by Title or Branch
+        run: |
+          REPO="${{ github.repository }}"
+          BRANCH_NAME="auto-cherry-pick"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          PR_TITLE="chore: Cherry-picked changes from upstream"
+          echo "🔍 Checking for open PR with title: $PR_TITLE"
+
+          TITLE_MATCH=$(gh pr list --repo "$REPO" --state open --json number,title \
+            --jq ".[] | select(.title == \"$PR_TITLE\") | .number" | tr -d '\n')
+          echo "🔍 Checking for open PR from branch $BRANCH_NAME to $BASE_BRANCH"
+
+          BRANCH_MATCH=$(gh pr list --repo "$REPO" --state open --json number,headRefName,baseRefName \
+            --jq ".[] | select(.headRefName == \"$BRANCH_NAME\" and .baseRefName == \"$BASE_BRANCH\") | .number" | tr -d '\n')
+
+          if [[ -n "$TITLE_MATCH" || -n "$BRANCH_MATCH" ]]; then
+            echo "❌ A cherry-pick PR already exists (PR #${TITLE_MATCH:-$BRANCH_MATCH})."
+            echo "🔁 Please review and merge the existing PR before retrying."
+            exit 1
+          else
+            echo "✅ No duplicate cherry-pick PRs found. Continuing workflow..."
+          fi
+
       - name: Determine Action Type
         id: check-action
         run: |
@@ -66,10 +96,7 @@ jobs:
       - name: Log Action Type
         run: |
           echo "**Action Type**: ${{ env.action_type }}" >> $GITHUB_STEP_SUMMARY
-      - name: Set up Git User
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Add Upstream Remote and Fetch Changes
         run: |
           UPSTREAM_URL="https://github.com/${{ inputs.original-owner }}/${{ inputs.repo-name }}.git"
@@ -80,116 +107,357 @@ jobs:
           echo "Detected upstream default branch: $DEFAULT_BRANCH"
           git fetch upstream $DEFAULT_BRANCH
           echo "DEFAULT_BRANCH=$DEFAULT_BRANCH" >> $GITHUB_ENV
-      - name: Get Last Commit Date in Our Repo
-        id: last_commit
+
+      - name: Get or Create Last Sync Date via gh CLI
+        id: sync-date
         run: |
-          LAST_COMMIT_DATE=$(git log --pretty=format:'%cd' --date=iso8601-strict -1 origin/${{ inputs.base_branch }} || echo "")
-          echo "LAST_COMMIT_DATE=$LAST_COMMIT_DATE" >> $GITHUB_ENV
-      - name: Get New Commits from Upstream Since Last Commit
-        run: |
-          echo "Fetching new commits from upstream since: ${{ env.LAST_COMMIT_DATE }}"
-          NEW_COMMITS=$(git log --since="${{ env.LAST_COMMIT_DATE }}" --pretty=format:'%H' upstream/${{ env.DEFAULT_BRANCH }}) || true
+          REPO="${{ github.repository }}"
+          ISSUE_TITLE="Tracking Last Sync Date"
+          ISSUE_NUMBER=$(gh issue list --repo "$REPO" --state open --json number,title \
+            --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number")
           
-          if [ -z "$NEW_COMMITS" ]; then
-            echo "No new commits found. Exiting."
+          LAST_SYNC_DATE=""
+          RELEASE_VERSION_TYPE="vx.x.x"
+
+          if [[ -n "$ISSUE_NUMBER" ]]; then
+            echo "✅ Found existing sync tracking issue #$ISSUE_NUMBER."
+            ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq '.body')
+
+            # Extract values from body
+            LAST_SYNC_DATE=$(echo "$ISSUE_BODY" | grep -oE 'Last Sync Date: [0-9TZ:-]+' | cut -d' ' -f4)
+            if echo "$ISSUE_BODY" | grep -q "Release Version Type:"; then
+              RELEASE_VERSION_TYPE=$(echo "$ISSUE_BODY" | grep -oE 'Release Version Type: [a-z\.]+' | cut -d' ' -f4)
+              echo "📌 Release Version Type: $RELEASE_VERSION_TYPE"
+            else
+              echo "⚠️ 'Release Version Type' not found in issue body. Defaulting to vx.x.x"
+              RELEASE_VERSION_TYPE="vx.x.x"
+            fi
+
+            echo "📌 Last Sync Date: $LAST_SYNC_DATE"
+            echo "📌 Release Version Type: $RELEASE_VERSION_TYPE"
+          else
+            echo "⚠️ No tracking issue found. Creating one..."
+
+            RELEASE_VERSION_TYPE="vx.x.x"
+            LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')  # current timestamp
+
+            BODY=$(printf "Last Sync Date: %s\nRelease Version Type: %s" "$LAST_SYNC_DATE" "$RELEASE_VERSION_TYPE")
+
+            ISSUE_URL=$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$BODY" | grep -oE 'https://github.com/[^ ]+')
+            if [[ -z "$ISSUE_URL" ]]; then
+              echo "❌ Failed to create issue."
+              exit 1
+            fi
+
+            ISSUE_NUMBER=$(basename "$ISSUE_URL")
+            echo "✅ Created new tracking issue #$ISSUE_NUMBER at $ISSUE_URL"
+          fi
+
+          echo "LAST_SYNC_DATE=$LAST_SYNC_DATE" >> $GITHUB_ENV
+          echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> $GITHUB_ENV
+          echo "RELEASE_VERSION_TYPE=$RELEASE_VERSION_TYPE" >> $GITHUB_ENV
+
+
+      - name: Get New Commits from Release After LAST_SYNC_DATE
+        env:
+          CHECK_DATE: ${{ env.LAST_SYNC_DATE }}
+        run: |
+          echo "🔍 Finding first release after: $CHECK_DATE"
+          releases=$(gh release list --limit 100 --json tagName,publishedAt \
+            --jq 'sort_by(.publishedAt) | .[] | [.tagName, .publishedAt] | @tsv')
+          prev_tag=""
+          prev_date=""
+          found=false
+          UPSTREAM_OWNER="${{ inputs.original-owner }}"
+          UPSTREAM_REPO="${{ inputs.repo-name }}"
+
+          case "$RELEASE_VERSION_TYPE" in
+            vx.x.x)
+              SEMVER_REGEX="^v([0-9]+)\.([0-9]+)\.([0-9]+)$"
+              ;;
+            vx.x)
+              SEMVER_REGEX="^v([0-9]+)\.([0-9]+)$"
+              ;;
+            vx)
+              SEMVER_REGEX="^v([0-9]+)$"
+              ;;
+            *)
+              echo "❌ Unknown RELEASE_VERSION_TYPE: $RELEASE_VERSION_TYPE"
+              exit 1
+              ;;
+          esac
+
+          while IFS=$'\t' read -r tag date; do
+            if [[ "$tag" =~ $SEMVER_REGEX ]]; then
+              if [[ "$date" > "$CHECK_DATE" && "$found" == "false" ]]; then
+                echo "✅ Found semantic release after $CHECK_DATE: $tag ($date)"
+                echo "RELEASE_TAG=$tag" >> $GITHUB_ENV
+                echo "RELEASE_DATE=$date" >> $GITHUB_ENV
+                if [ -n "$prev_tag" ]; then
+                  echo "↩️ Previous release: $prev_tag ($prev_date)"
+                  echo "PREVIOUS_TAG=$prev_tag" >> $GITHUB_ENV
+                  echo "PREVIOUS_DATE=$prev_date" >> $GITHUB_ENV
+                  compare_result=$(gh api repos/$UPSTREAM_OWNER/$UPSTREAM_REPO/compare/$prev_tag...$tag)
+                  commit_shas=$(echo "$compare_result" | jq -r '.commits[]?.sha')
+                else
+                  echo "⚠️ No previous release found. Using all commits in $tag"
+                  commit_shas=$(gh api repos/${{ github.repository }}/commits?sha=$tag | jq -r '.[].sha')
+                fi
+                echo "🆕 Commits in release $tag:"
+                echo "$commit_shas"
+                echo "NEW_COMMITS<<EOF" >> $GITHUB_ENV
+                echo "$commit_shas" >> $GITHUB_ENV
+                echo "EOF" >> $GITHUB_ENV
+                found=true
+                break
+              fi
+              prev_tag="$tag"
+              prev_date="$date"
+            fi
+          done <<< "$releases"
+
+          if [ "$found" == "false" ]; then
+            echo "❌ No semantic release found after $CHECK_DATE"
             exit 0
           fi
-          echo "NEW_COMMITS<<EOF" >> $GITHUB_ENV
-          echo "$NEW_COMMITS" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+
       - name: Check for Existing PR
         id: check_pr
         run: |
-          REPO=${{ github.repository }}
-          TOKEN=${{ secrets.GITHUB_TOKEN }}
+          REPO="${{ github.repository }}"
           BRANCH_NAME="auto-cherry-pick"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
           
-          EXISTING_PR_JSON=$(curl -s -H "Authorization: token $TOKEN" \
-            "https://api.github.com/repos/$REPO/pulls?state=open&head=${{ github.repository_owner }}:$BRANCH_NAME")
-          EXISTING_PR_URL=$(echo "$EXISTING_PR_JSON" | jq -r '.[0] | select(.html_url != null) | .html_url' || echo "")
-          EXISTING_PR_NUMBER=$(echo "$EXISTING_PR_JSON" | jq -r '.[0] | select(.number != null) | .number' || echo "")
-          if [[ -n "$EXISTING_PR_URL" && -n "$EXISTING_PR_NUMBER" ]]; then
+          EXISTING_PR_JSON=$(gh pr list --repo "$REPO" --head "$BRANCH_NAME" --state open --json number,url)
+
+          if [[ $(echo "$EXISTING_PR_JSON" | jq length) -eq 0 ]]; then
+            echo "No existing PR found."
+            echo "pr_exists=false" >> $GITHUB_ENV
+          else
+            EXISTING_PR_URL=$(echo "$EXISTING_PR_JSON" | jq -r '.[0].url')
+            EXISTING_PR_NUMBER=$(echo "$EXISTING_PR_JSON" | jq -r '.[0].number')
+
             echo "Existing PR found: $EXISTING_PR_URL (PR #$EXISTING_PR_NUMBER)"
             echo "pr_exists=true" >> $GITHUB_ENV
             echo "pr_url=$EXISTING_PR_URL" >> $GITHUB_ENV
             echo "PR_NUMBER=$EXISTING_PR_NUMBER" >> $GITHUB_ENV
-          else
-            echo "No existing PR found."
-            echo "pr_exists=false" >> $GITHUB_ENV
           fi
-      - name: Create or Reset Branch
+
+      - name: Reset & Update PR Branch Using gh CLI
         run: |
-          BRANCH_NAME="auto-cherry-pick"
-          git fetch origin $BRANCH_NAME || true
-          if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
-            echo "Branch $BRANCH_NAME exists. Resetting it."
-            git checkout $BRANCH_NAME
-            git reset --hard origin/${{ inputs.base_branch }}
+          REPO="${{ github.repository }}"
+          BRANCH_NAME="${{ env.BRANCH_NAME }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+
+          echo "🔍 Checking if branch $BRANCH_NAME exists..."
+
+          if gh api "repos/$REPO/git/ref/heads/$BRANCH_NAME" --silent > /dev/null 2>&1; then
+            echo "✅ Branch $BRANCH_NAME exists."
+
+            if [[ -n "${{ env.NEW_COMMITS }}" ]]; then
+              echo "🔄 New commits found. Resetting branch $BRANCH_NAME to match $BASE_BRANCH"
+              
+              BASE_COMMIT_SHA=$(gh api "repos/$REPO/git/ref/heads/$BASE_BRANCH" --jq '.object.sha')
+
+              gh api --method PATCH "repos/$REPO/git/refs/heads/$BRANCH_NAME" \
+                -F sha="$BASE_COMMIT_SHA" \
+                -F force=true
+
+              echo "✅ Branch $BRANCH_NAME reset successfully."
+            else
+              echo "⚠️ No new commits to cherry-pick. Skipping branch reset."
+            fi
+
           else
-            echo "Creating new branch: $BRANCH_NAME"
-            git checkout -b $BRANCH_NAME
+            echo "🆕 Branch $BRANCH_NAME does not exist. Creating from $BASE_BRANCH..."
+
+            BASE_COMMIT_SHA=$(gh api "repos/$REPO/git/ref/heads/$BASE_BRANCH" --jq '.object.sha')
+
+            gh api --method POST "repos/$REPO/git/refs" \
+              -F ref="refs/heads/$BRANCH_NAME" \
+              -F sha="$BASE_COMMIT_SHA"
+
+            echo "✅ New branch $BRANCH_NAME created successfully."
           fi
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-      - name: Cherry-Pick New Commits
+
+      - name: Cherry-Pick Changes via gh CLI
         run: |
+          UPSTREAM_REPO="${{ inputs.original-owner }}/${{ inputs.repo-name }}"
+          TARGET_REPO="${{ github.repository }}"
+          BRANCH="${{ env.BRANCH_NAME }}"
+
+          echo "🚀 Starting cherry-picking from $UPSTREAM_REPO to $TARGET_REPO on branch: $BRANCH"
+
           SKIPPED_COMMITS=""
           CHANGES_FOUND=false
-          WORKFLOW_CHANGES=false
+          MISSING_FILES=""
+          CONFLICTING_FILES=""
+          WORKFLOW_FILES=""
+
           while read -r COMMIT_HASH; do
             echo "Processing commit: $COMMIT_HASH"
-            git cherry-pick --abort || true
-            if [ $(git rev-list --parents -n 1 $COMMIT_HASH | wc -w) -gt 2 ]; then
-              echo "⚠️ Merge commit detected ($COMMIT_HASH). Using -m 1."
-              if ! git cherry-pick -m 1 $COMMIT_HASH; then
-                echo "❌ Merge conflict detected in $COMMIT_HASH. Skipping."
-                SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
-                git cherry-pick --abort || true
-                continue
-              fi
-            else
-              if ! git cherry-pick $COMMIT_HASH; then
-                echo "❌ Conflict detected or empty commit for $COMMIT_HASH. Skipping."
-                SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
-                git cherry-pick --abort || true
-                continue
-              fi
+
+            if [ -z "$COMMIT_HASH" ]; then
+              echo "⚠️ Skipping empty commit hash."
+              continue
             fi
-            LATEST_COMMIT_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
-            WORKFLOW_FILE_CHANGES=$(echo "$LATEST_COMMIT_FILES" | grep "^.github/workflows/" || true)
-            NON_WORKFLOW_CHANGES=$(echo "$LATEST_COMMIT_FILES" | grep -v "^.github/workflows/" || true)
-            if [ -n "$WORKFLOW_FILE_CHANGES" ]; then
-              echo "⚠️ Workflow file changes detected. They will not be committed."
-              WORKFLOW_CHANGES=true
-              git checkout HEAD -- .github/workflows/
-              git reset HEAD -- .github/workflows/
+
+            # Fetch commit details
+            COMMIT_DETAILS=$(gh api "repos/$UPSTREAM_REPO/commits/$COMMIT_HASH" 2>/dev/null || echo "ERROR")
+
+            if [ "$COMMIT_DETAILS" == "ERROR" ] || [ -z "$COMMIT_DETAILS" ] || [ "$COMMIT_DETAILS" == "null" ]; then
+              echo "❌ Failed to fetch commit details for $COMMIT_HASH. Skipping."
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+              continue
             fi
-            if [ -n "$NON_WORKFLOW_CHANGES" ]; then
-              echo "✅ Detected non-workflow file changes."
-              CHANGES_FOUND=true
-            else
-              echo "⚠️ No real changes after workflow cleanup."
+
+            PARENT_COUNT=$(echo "$COMMIT_DETAILS" | jq '.parents | length')
+            if [[ "$PARENT_COUNT" -gt 1 ]]; then
+              echo "⚠️ Skipping merge commit $COMMIT_HASH"
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+              continue
             fi
-            git commit --amend --no-edit --author="github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+
+            COMMIT_MESSAGE=$(echo "$COMMIT_DETAILS" | jq -r '.commit.message' 2>/dev/null || echo "ERROR")
+
+            if [ "$COMMIT_MESSAGE" == "ERROR" ] || [ -z "$COMMIT_MESSAGE" ] || [ "$COMMIT_MESSAGE" == "null" ]; then
+              echo "⚠️ Skipping commit $COMMIT_HASH due to missing commit message."
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+              continue
+            fi
+
+            MODIFIED_FILES=$(echo "$COMMIT_DETAILS" | jq -r '.files[].filename' 2>/dev/null || echo "ERROR")
+
+            if [ "$MODIFIED_FILES" == "ERROR" ] || [ -z "$MODIFIED_FILES" ]; then
+              echo "❌ Failed to retrieve modified files for commit $COMMIT_HASH. Skipping."
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+              continue
+            fi
+
+            FILTERED_FILES=$(echo "$MODIFIED_FILES" | grep -Ev "^package.json$|^package-lock.json$|^yarn.lock$|^pnpm-lock.yaml$|^node_modules/|^dist/|^.gitignore" || echo "")
+
+            echo "DEBUG: FILTERED_FILES After Filtering:"
+            echo "$FILTERED_FILES"
+
+            if [ -z "$FILTERED_FILES" ] || [ "$FILTERED_FILES" == "null" ]; then
+              echo "⚠️ Skipping commit $COMMIT_HASH as it only contains ignored file changes."
+              SKIPPED_COMMITS="${SKIPPED_COMMITS}\n$COMMIT_HASH"
+              continue
+            fi
+
+            for file in $FILTERED_FILES; do
+                echo "Processing file: $file"
+
+                if [[ "$file" == .github/workflows/* ]]; then
+                  echo "⚠️ Workflow file $file detected. Skipping patch attempt."
+                  WORKFLOW_FILES="${WORKFLOW_FILES}\n$file:$COMMIT_HASH"
+                  continue
+                fi
+
+                FILE_RESPONSE=$(gh api "repos/$TARGET_REPO/contents/$file?ref=$BRANCH" 2>/dev/null || echo "ERROR")
+                SHA=$(echo "$FILE_RESPONSE" | jq -r .sha 2>/dev/null || echo "null")
+
+                if [[ "$FILE_RESPONSE" == "ERROR" ]] || [[ -z "$SHA" ]] || [[ "$SHA" == "null" ]] || [[ "$FILE_RESPONSE" == *"Not Found"* ]]; then
+                  echo "⚠️ File $file does not exist in target repo."
+                  MISSING_FILES="${MISSING_FILES}\n$file"
+                  continue
+                fi
+
+                BASE64_CONTENT=$(echo "$FILE_RESPONSE" | jq -r '.content' | base64 --decode 2>/dev/null || echo "ERROR")
+                if [ "$BASE64_CONTENT" != "ERROR" ]; then
+                  echo "$BASE64_CONTENT" > temp_file.txt
+                fi
+
+                PATCH=$(echo "$COMMIT_DETAILS" | jq -r '.files[] | select(.filename=="'$file'") | .patch' 2>/dev/null || echo "ERROR")
+
+                if [ "$PATCH" == "ERROR" ] || [ -z "$PATCH" ]; then
+                  echo "⚠️ No patch found for $file. Skipping."
+                  continue
+                fi
+
+                echo "$PATCH" > temp_patch.diff
+                if ! patch --forward temp_file.txt < temp_patch.diff; then
+                  echo "❌ Conflict detected while applying patch to $file. Skipping..."
+                  CONFLICTING_FILES="${CONFLICTING_FILES}\n$file:$COMMIT_HASH"
+                  continue
+                fi
+
+                # Commit the patched file via GitHub API
+                base64 -w 0 temp_file.txt > temp_file.txt.b64
+
+                COMMIT_PAYLOAD=$(jq -n --arg msg "$COMMIT_MESSAGE" \
+                    --rawfile content temp_file.txt.b64 \
+                    --arg branch "$BRANCH" \
+                    --arg sha "$SHA" \
+                    '{
+                      "message": $msg,
+                      "content": $content,
+                      "branch": $branch,
+                      "sha": $sha
+                    }')
+
+                RESPONSE=$(gh api --method PUT "repos/$TARGET_REPO/contents/$file" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    --input - <<< "$COMMIT_PAYLOAD" 2>/dev/null || echo "ERROR")
+
+                if [ "$RESPONSE" == "ERROR" ] || ! echo "$RESPONSE" | jq -e '.content' > /dev/null; then
+                  echo "❌ Failed to commit changes for $file."
+                  CONFLICTING_FILES="${CONFLICTING_FILES}\n$file:$COMMIT_HASH"
+                else
+                  echo "✅ Applied patch and updated file: $file"
+                  CHANGES_FOUND=true
+                fi
+            done
+
           done <<< "${{ env.NEW_COMMITS }}"
-          if [ "$CHANGES_FOUND" = true ]; then
-            echo "CHANGES=true" >> $GITHUB_ENV
-          else
-            echo "No changes after cherry-pick. Skipping further steps."
+
+          if [ "$CHANGES_FOUND" = false ]; then
+            echo "✅ No valid changes after cherry-pick. Exiting cleanly."
             echo "CHANGES=false" >> $GITHUB_ENV
+            exit 0  # ✅ Ensures script exits cleanly instead of failing
+          else
+            echo "CHANGES=true" >> $GITHUB_ENV
           fi
-          if [ "$WORKFLOW_CHANGES" = true ]; then
-            echo "WORKFLOW_CHANGES=true" >> $GITHUB_ENV
-          fi
+
           echo "SKIPPED_COMMITS<<EOF" >> $GITHUB_ENV
           echo -e "$SKIPPED_COMMITS" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+
+          echo "MISSING_FILES<<EOF" >> $GITHUB_ENV
+          echo -e "$MISSING_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "CONFLICTING_FILES<<EOF" >> $GITHUB_ENV
+          echo -e "$CONFLICTING_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "WORKFLOW_FILES<<EOF" >> $GITHUB_ENV
+          echo -e "$WORKFLOW_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Install pnpm if selected
+        if: ${{ inputs.package_manager == 'pnpm' }}
+        run: |
+          npm install -g pnpm
+          pnpm --version
+          pnpm install --frozen-lockfile
+
+      - name: Install specific Yarn version if defined
+        if: ${{ inputs.package_manager == 'yarn' && inputs.yarn_version != '' }}
+        run: |
+          corepack enable
+          corepack prepare "yarn@${{ inputs.yarn_version }}" --activate
+          echo "Activated Yarn version ${{ inputs.yarn_version }}"
+
       - name: Set Up Node.js
-        if: env.action_type == 'node' && env.CHANGES == 'true'
+        if: env.action_type == 'node'
+        env:
+          CHANGES: ${{ env.CHANGES }}
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: "20"
           cache: ${{ inputs.package_manager }}
-
+          
       - name: Authenticate npm with GitHub Packages (if using private packages)
         if: env.action_type == 'node' && inputs.use_private_packages == true
         run: |
@@ -203,92 +471,241 @@ jobs:
           else
             yarn install --frozen-lockfile
           fi
-      - name: Run Specified Build Script
+
+      - name: Run Specified Build Script and Commit Changes via gh CLI
         if: env.action_type == 'node' && env.CHANGES == 'true'
         run: |
-          eval "${{ inputs.script }}" || echo "No build script found or failed, skipping."
-          git add .
-          if git diff --cached --exit-code; then
-            echo "No additional changes from build process."
+          git fetch origin
+          git checkout "${{ env.BRANCH_NAME }}"
+          git pull origin "${{ env.BRANCH_NAME }}" --ff-only
+
+          SCRIPT_INPUT="${{ inputs.script }}"
+          echo "Resolved build script: '$SCRIPT_INPUT'"
+
+          if [ -z "$SCRIPT_INPUT" ]; then
+            echo "⚠️ No build script provided — skipping build step."
+            echo "build_skipped=true" >> $GITHUB_ENV
+            build_skipped=true
           else
-            git commit -m "chore: update build artifacts"
-          fi
-      - name: Create or Update Pull Request
-        if: env.CHANGES == 'true'
-        run: |
-          if [ "${{ env.pr_exists }}" == "true" ]; then
-            echo "✅ PR already exists: ${{ env.pr_url }} - Forcing push with updates..."
-            git push origin "$BRANCH_NAME" --force
-          else
-            echo "Creating a new PR..."
-            git push origin "$BRANCH_NAME" --force
-            API_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d "{
-                \"title\": \"fix: Sync Upstream Changes\",
-                \"body\": \"Cherry-picked commits from upstream automatically.\",
-                \"head\": \"${{ env.BRANCH_NAME }}\",
-                \"base\": \"${{ inputs.base_branch }}\",
-                \"draft\": false
-              }" "https://api.github.com/repos/${{ github.repository }}/pulls")
-            echo "API Response: $API_RESPONSE"
-            PR_URL=$(echo "$API_RESPONSE" | jq -r '.html_url')
-            PR_NUMBER=$(echo "$API_RESPONSE" | jq -r '.number')
-            if [[ "$PR_URL" == "null" ]]; then
-              echo "❌ Error: PR creation failed. Check API response above."
-              exit 1
+            echo "▶️ Running build script: $SCRIPT_INPUT"
+
+            set +e  # disable automatic exit on failure
+            eval "$SCRIPT_INPUT"
+            BUILD_EXIT_CODE=$?
+            set -e  # re-enabling the same
+
+            if [ $BUILD_EXIT_CODE -ne 0 ]; then
+              echo "build_failed=true" >> $GITHUB_ENV
+              build_failed=true
             else
-              echo "✅ Pull Request created: $PR_URL"
-              echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+              echo "✅ Build succeeded"
+              build_failed=false
             fi
           fi
-      - name: Comment on PR with Updates (Single Comment Per PR)
+
+          if [ "$build_failed" = "true" ] || [ "$build_skipped" = "true" ]; then
+            echo "⚠️ Skipping commit step due to build failure or skip"
+            exit 0
+          fi
+
+          git add .
+          
+          FILES_CHANGED=$(git status --porcelain | awk '{print $2}' | grep -Ev 'temp_file.txt|temp_patch.diff|temp_patch.txt|.*\.rej' || true)
+          echo "Processing file: $FILES_CHANGED"
+
+          if [ -z "$FILES_CHANGED" ]; then
+            echo "No changes detected."
+          else
+            echo "Committing changes via GitHub CLI..."
+
+            for file in $FILES_CHANGED; do
+              echo "Processing file: $file"
+
+              CONTENT=$(base64 -w 0 "$file")
+
+              SHA=$(gh api "repos/${{ github.repository }}/contents/$file?ref=${{ env.BRANCH_NAME }}" --jq .sha 2>/dev/null || echo "")
+              if [ "$SHA" = "null" ]; then SHA=""; fi
+
+              JSON_PAYLOAD=$(mktemp)
+              echo "{
+                \"message\": \"fix: apply code build script\",
+                \"content\": \"$CONTENT\",
+                \"branch\": \"${{ env.BRANCH_NAME }}\",
+                \"sha\": \"$SHA\"
+              }" > "$JSON_PAYLOAD"
+              curl -s -X PUT -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                --data-binary @"$JSON_PAYLOAD" \
+                "https://api.github.com/repos/${{ github.repository }}/contents/$file"
+              echo "✅ File committed: $file"
+            done
+
+            echo "✅ All changes committed successfully."
+          fi
+
+      - name: Reopen PR If It Was Closed via gh CLI
+        if: env.CHANGES == 'true' && env.PR_NUMBER != ''
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ env.PR_NUMBER }}"
+
+          echo "Checking PR #$PR_NUMBER state..."
+          PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq '.state')
+
+          echo "Initial PR state: $PR_STATE"
+
+          if [[ "$PR_STATE" == "OPEN" ]]; then
+            echo "🔄 PR state is 'open', waiting 5 seconds and rechecking..."
+            sleep 5
+
+            PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq '.state')
+            echo "Updated PR state: $PR_STATE"
+          fi
+
+          if [[ "$PR_STATE" == "OPEN" ]]; then
+            echo "⚠️ PR #$PR_NUMBER is unexpectedly open. Closing it now..."
+            gh api --method PATCH "repos/$REPO/pulls/$PR_NUMBER" -F state="closed"
+            echo "✅ PR #$PR_NUMBER force-closed."
+            sleep 5  # Give GitHub time to register the state change
+
+            PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq '.state')
+          fi
+
+          if [[ "$PR_STATE" == "CLOSED" ]]; then
+            echo "🔄 Reopening closed PR #$PR_NUMBER..."
+            gh pr reopen "$PR_NUMBER" --repo "$REPO"
+            echo "✅ PR #$PR_NUMBER reopened."
+          else
+            echo "⚠️ PR #$PR_NUMBER is still open, skipping reopening."
+          fi
+
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
+      - name: Create PR (If Not Existing) via gh CLI
+        if: env.CHANGES == 'true' && env.PR_NUMBER == ''
+        run: |
+          echo "No existing PR found. Creating new PR..."
+          
+          PR_TITLE="chore: Cherry-picked changes from upstream"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          BRANCH_NAME="${{ env.BRANCH_NAME }}"
+
+          PR_RESPONSE=$(gh pr create --repo "${{ github.repository }}" \
+            --title "$PR_TITLE" \
+            --head "$BRANCH_NAME" \
+            --base "$BASE_BRANCH" \
+            --body "Cherry-picked changes from upstream.")
+
+          PR_NUMBER=$(gh pr view "$BRANCH_NAME" --repo "${{ github.repository }}" --json number --jq '.number')
+          PR_URL=$(gh pr view "$BRANCH_NAME" --repo "${{ github.repository }}" --json url --jq '.url')
+
+          if [[ -z "$PR_URL" || "$PR_URL" == "null" ]]; then
+            echo "❌ Error: PR creation failed."
+            exit 1
+          else
+            echo "✅ Pull Request created: $PR_URL"
+            echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          fi
+
+      - name: Update Last Sync Date via gh CLI
+        if: env.RELEASE_DATE != ''
+        run: |
+          REPO="${{ github.repository }}"
+          ISSUE_NUMBER="${{ env.ISSUE_NUMBER }}"
+          SYNC_DATE="${{ env.RELEASE_DATE }}"
+
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "❌ Error: No issue number found. Cannot update sync date."
+            exit 1
+          fi
+          if [ -z "$SYNC_DATE" ]; then
+            echo "❌ Error: No release date found. Cannot update sync date."
+            exit 1
+          fi
+
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq '.body')
+          if echo "$ISSUE_BODY" | grep -q "Last Sync Date:"; then
+            UPDATED_BODY=$(echo "$ISSUE_BODY" | sed -E "s|Last Sync Date: .*|Last Sync Date: $SYNC_DATE|")
+          else
+            UPDATED_BODY=$(printf "%s\nLast Sync Date: %s" "$ISSUE_BODY" "$SYNC_DATE")
+          fi
+
+          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body "$UPDATED_BODY"
+          echo "✅ Updated issue #$ISSUE_NUMBER with new sync date: $SYNC_DATE"
+
+      - name: Comment on PR with Updates via gh CLI
         if: env.PR_NUMBER != ''
         run: |
-          echo "Checking for existing bot comment on PR #${{ env.PR_NUMBER }}"
+          echo "🔍 Checking for existing bot comment on PR #${{ env.PR_NUMBER }}"
+
+          REPO="${{ github.repository }}"
+          PR_NUMBER="${{ env.PR_NUMBER }}"
+          COMMENT_BODY=$(mktemp)
+
           {
             echo "🚀 PR Updated!"
             echo ""
             echo "The PR has been updated with the latest cherry-picked commits."
             echo ""
+            echo "@${{ github.repository_owner }}/maintained-actions-dev Please review and approve the changes."
+            echo ""
+
+            if [ "${{ env.build_skipped }}" == "true" ]; then
+              echo "⚠️ Build was **skipped** because no build script was provided."
+              echo ""
+            elif [ "${{ env.build_failed }}" == "true" ]; then
+              echo "❌ Build script **failed**. No files were committed."
+              echo ""
+            fi
+
+            if [ -n "${{ env.RELEASE_TAG }}" ]; then
+              echo "📦 Target Release Version: \`${{ env.RELEASE_TAG }}\`"
+              echo ""
+            fi
             if [ -n "${{ env.SKIPPED_COMMITS }}" ]; then
-              echo "⚠️ Skipped Commits Due to Conflicts:"
+              echo "⚠️ Completely Skipped Commits Due to only modifying files in: package.json, package-lock.json, yarn.lock, node_modules/, dist/, or .gitignore"
               while IFS= read -r line; do
                 echo "- $line"
               done <<< "${{ env.SKIPPED_COMMITS }}"
               echo ""
             fi
-            if [ "${{ env.WORKFLOW_CHANGES }}" == "true" ]; then
-              echo "⚠️ Workflow file changes were detected and **excluded from this PR**."
-              echo "Please review and handle them manually."
+            if [ -n "${{ env.MISSING_FILES }}" ]; then
+              echo "❗ Missing Files:"
+              while IFS= read -r line; do
+                echo "- $line"
+              done <<< "${{ env.MISSING_FILES }}"
               echo ""
             fi
-          } > comment_body.txt
-          COMMENT_BODY_ESCAPED=$(jq -Rs . < comment_body.txt)
-          EXISTING_COMMENT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments" | 
-            jq -r '.[] | select(.body | contains("🚀 PR Updated!")) | .id')
+            if [ -n "${{ env.WORKFLOW_FILES }}" ]; then
+              echo "🛑 Workflow Files (Cannot be auto-applied by GitHub Actions):"
+              while IFS= read -r entry; do
+                if [[ -z "$entry" ]]; then continue; fi
+                file_path=$(echo "$entry" | cut -d':' -f1)
+                commit_sha=$(echo "$entry" | cut -d':' -f2)
+                echo "- \`$file_path\` from commit \`$commit_sha\`"
+              done <<< "${{ env.WORKFLOW_FILES }}"
+              echo ""
+            fi
+            if [ -n "${{ env.CONFLICTING_FILES }}" ]; then
+              echo "❌ Conflicting Files:"
+              while IFS= read -r entry; do
+                if [[ -z "$entry" ]]; then continue; fi
+                file_path=$(echo "$entry" | cut -d':' -f1)
+                commit_sha=$(echo "$entry" | cut -d':' -f2)
+                echo "- \`$file_path\` from commit \`$commit_sha\`"
+              done <<< "${{ env.CONFLICTING_FILES }}"
+              echo ""
+            fi
+
+          } > "$COMMENT_BODY"
+
+          EXISTING_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --jq '.[] | select(.body | contains("🚀 PR Updated!")) | .id')
+
           if [ -n "$EXISTING_COMMENT_ID" ]; then
             echo "Updating existing comment: $EXISTING_COMMENT_ID"
-            curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"body\": $COMMENT_BODY_ESCAPED}" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$EXISTING_COMMENT_ID"
+            gh api --method PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT_ID" \
+              -F body="$(cat "$COMMENT_BODY")"
           else
-            echo "No existing comment found. Creating a new comment."
-            curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"body\": $COMMENT_BODY_ESCAPED}" \
-              "https://api.github.com/repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/comments"
+            echo "📝 Creating a new comment on PR #$PR_NUMBER"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$COMMENT_BODY"
           fi
-
-      - name: Request Review
-        if: env.PR_NUMBER != ''
-        run: |
-          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -d '{
-              "team_reviewers": ["maintained-actions-dev"]
-            }' \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/requested_reviewers"
