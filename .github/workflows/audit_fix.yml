@@ -107,7 +107,7 @@ jobs:
             echo "No open PR found."
             echo "EXISTING_PR_NUMBER=" >> $GITHUB_ENV
           fi
-  
+        
       - name: Reset & Update PR Branch Using API
         run: |
           echo "🔍 Checking if branch ${{ env.BRANCH_NAME }} exists..."
@@ -129,11 +129,24 @@ jobs:
             echo "✅ Branch ${{ env.BRANCH_NAME }} reset successfully."
           else
             echo "🆕 Branch ${{ env.BRANCH_NAME }} does not exist. Creating from ${{ inputs.base_branch }}..."
-            curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"ref\": \"refs/heads/${{ env.BRANCH_NAME }}\", \"sha\": \"$BASE_COMMIT_SHA\"}" \
-              "https://api.github.com/repos/${{ github.repository }}/git/refs"
-            echo "✅ New branch ${{ env.BRANCH_NAME }} created successfully."
+
+              if [[ -z "$BASE_COMMIT_SHA" || "$BASE_COMMIT_SHA" == "null" ]]; then
+                echo "❌ Cannot create branch because base commit SHA is missing."
+                exit 1
+              fi
+
+              CREATE_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                -d "{\"ref\": \"refs/heads/${{ env.BRANCH_NAME }}\", \"sha\": \"$BASE_COMMIT_SHA\"}" \
+                "https://api.github.com/repos/${{ github.repository }}/git/refs")
+
+              if echo "$CREATE_RESPONSE" | jq -e '.ref' >/dev/null; then
+                echo "✅ New branch ${{ env.BRANCH_NAME }} created successfully."
+              else
+                echo "❌ Failed to create branch. API Response:"
+                echo "$CREATE_RESPONSE"
+                exit 1
+              fi
           fi
 
       - name: Run Audit Fix
