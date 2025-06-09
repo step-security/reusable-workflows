@@ -112,10 +112,18 @@ jobs:
         run: |
           echo "🔍 Checking if branch ${{ env.BRANCH_NAME }} exists..."
 
+          BRANCH_REF="refs/heads/${{ env.BRANCH_NAME }}"
           BRANCH_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ env.BRANCH_NAME }}")
 
-          BRANCH_EXISTS=$(echo "$BRANCH_RESPONSE" | jq -r '.ref // empty')
+          BRANCH_EXISTS=$(echo "$BRANCH_RESPONSE" | jq -r '
+            if type == "object" and has("ref") then
+              if .ref == "'$BRANCH_REF'" then .ref else empty end
+            elif type == "array" then
+              map(select(.ref == "'$BRANCH_REF'")) | .[0].ref // empty
+            else
+              empty
+            end' 2>/dev/null || echo "")
 
           BASE_COMMIT_SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }}" | jq -r '.object.sha')
