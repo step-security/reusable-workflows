@@ -371,7 +371,7 @@ jobs:
 
                 if [[ "$FILE_RESPONSE" == "ERROR" ]] || [[ -z "$SHA" ]] || [[ "$SHA" == "null" ]] || [[ "$FILE_RESPONSE" == *"Not Found"* ]]; then
                   echo "⚠️ File $file does not exist in target repo."
-                  MISSING_FILES="${MISSING_FILES}\n$file"
+                  MISSING_FILES="${MISSING_FILES}\n$file:$COMMIT_HASH"
                   continue
                 fi
 
@@ -683,8 +683,11 @@ jobs:
             fi
             if [ -n "${{ env.MISSING_FILES }}" ]; then
               echo "❗ Missing Files:"
-              while IFS= read -r line; do
-                echo "- $line"
+              while IFS= read -r entry; do
+                if [[ -z "$entry" ]]; then continue; fi
+                file_path=$(echo "$entry" | cut -d':' -f1)
+                commit_sha=$(echo "$entry" | cut -d':' -f2)
+                echo "- \`$file_path\` from commit \`$commit_sha\`"
               done <<< "${{ env.MISSING_FILES }}"
               echo ""
             fi
