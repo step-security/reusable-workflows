@@ -139,7 +139,19 @@ jobs:
             echo "⚠️ No tracking issue found. Creating one..."
 
             RELEASE_VERSION_TYPE="vx.x.x"
-            LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')  # current timestamp
+            
+            # Get the last release date instead of current date
+            echo "🔍 Getting last release date for initial sync date..."
+            LAST_RELEASE=$(gh release list --limit 1 --json tagName,publishedAt --jq '.[0]')
+            
+            if [[ -n "$LAST_RELEASE" && "$LAST_RELEASE" != "null" ]]; then
+              LAST_SYNC_DATE=$(echo "$LAST_RELEASE" | jq -r '.publishedAt')
+              LAST_TAG=$(echo "$LAST_RELEASE" | jq -r '.tagName')
+              echo "📌 Using last release date: $LAST_SYNC_DATE (from $LAST_TAG)"
+            else
+              echo "⚠️ No releases found, using current date as fallback"
+              LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            fi
 
             BODY=$(printf "Last Sync Date: %s\nRelease Version Type: %s" "$LAST_SYNC_DATE" "$RELEASE_VERSION_TYPE")
 
