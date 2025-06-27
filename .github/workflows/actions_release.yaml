@@ -14,6 +14,10 @@ on:
       yarn_version:
         required: false
         type: string
+      working_directory:
+        description: "Working directories to run commands in (comma-separated, optional)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -97,7 +101,7 @@ jobs:
           fi
   
       - name: Install dependencies
-        if: env.action_type == 'node'
+        if: env.action_type == 'node' && (inputs.working_directory == '' || inputs.working_directory == null)
         run: |
           if [ -f yarn.lock ]; then
             yarn install
@@ -109,7 +113,7 @@ jobs:
           fi
       
       - name: Run Specified Build Script
-        if: env.action_type == 'node'
+        if: env.action_type == 'node' && (inputs.working_directory == '' || inputs.working_directory == null)
         id: build-step
         run: |
           SCRIPT="${{ inputs.script }}"
@@ -123,7 +127,7 @@ jobs:
 
 
       - name: Compare the expected and actual dist/ directories
-        if: env.action_type == 'node' && steps.build-step.outcome == 'success'
+        if: env.action_type == 'node' && steps.build-step.outcome == 'success' && (inputs.working_directory == '' || inputs.working_directory == null)
         run: |
           DIFF=$(git diff --ignore-all-space --ignore-blank-lines dist/)
           
@@ -150,6 +154,83 @@ jobs:
             exit 1
           else
             echo "No meaningful uncommitted changes detected."
+          fi
+        shell: bash
+
+      - name: Install dependencies in working directories
+        if: env.action_type == 'node' && inputs.working_directory != '' && inputs.working_directory != null
+        run: |
+          IFS=',' read -ra DIRS <<< "${{ inputs.working_directory }}"
+          for dir in "${DIRS[@]}"; do
+            dir=$(echo "$dir" | xargs) # Trim whitespace
+            echo "Installing dependencies in directory: $dir"
+            cd "$dir"
+            if [ -f yarn.lock ]; then
+              yarn install
+            elif [ -f package-lock.json ]; then
+              npm ci
+            elif [ -f pnpm-lock.yaml ]; then
+              npm install -g pnpm
+              pnpm install
+            fi
+            cd - > /dev/null
+          done
+
+      - name: Build and Compare Dist in working directories
+        if: env.action_type == 'node' && inputs.working_directory != '' && inputs.working_directory != null
+        id: build-working-dirs
+        run: |
+          SCRIPT="${{ inputs.script }}"
+          IFS=',' read -ra DIRS <<< "${{ inputs.working_directory }}"
+          OVERALL_CHANGES=false
+          
+          for dir in "${DIRS[@]}"; do
+            dir=$(echo "$dir" | xargs) # Trim whitespace
+            echo "Processing directory: $dir"
+            cd "$dir"
+            
+            # Run build script
+            echo "Running build script in directory: $dir"
+            eval "$SCRIPT"
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "❌ Build script failed in directory: $dir"
+              exit 1
+            fi
+            
+            # Compare dist changes immediately after build
+            echo "Checking dist/ changes in directory: $dir"
+            DIFF=$(git diff --ignore-all-space --ignore-blank-lines dist/)
+            # Filter out empty lines and whitespace-only lines using awk
+            DIFF_FILTERED=$(echo "$DIFF" | awk 'NF')
+        
+            # Check if there are meaningful differences
+            if [ -n "$DIFF_FILTERED" ]; then
+              echo "**Uncommitted changes detected in $dir after build. See the build log for details.**" >> $GITHUB_STEP_SUMMARY
+              echo "### Detected Uncommitted Changes in $dir"
+              echo "Detected uncommitted changes after build in $dir. See the details below:"
+              echo '```diff'
+              while IFS= read -r line; do
+                if [[ "$line" == \+* ]]; then
+                  echo -e "\033[32m$line\033[0m" # Green for additions
+                elif [[ "$line" == \-* ]]; then
+                  echo -e "\033[31m$line\033[0m" # Red for deletions
+                else
+                  echo "$line"
+                fi
+              done <<< "$DIFF_FILTERED"
+              echo '```'
+              OVERALL_CHANGES=true
+            else
+              echo "No meaningful uncommitted changes detected in $dir."
+            fi
+            
+            cd - > /dev/null
+          done
+          
+          if [ "$OVERALL_CHANGES" = true ]; then
+            exit 1
           fi
         shell: bash
 
