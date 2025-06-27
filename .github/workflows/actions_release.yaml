@@ -39,12 +39,33 @@ jobs:
       - name: Determine Action Type
         id: check-action
         run: |
-          if grep -E -q "using: ['\"]?docker['\"]?" action.yml action.yaml 2>/dev/null; then
-            echo "action_type=docker" >> $GITHUB_ENV
-          elif grep -E -q "using: ['\"]?node[0-9]+['\"]?" action.yml action.yaml 2>/dev/null; then
-            echo "action_type=node" >> $GITHUB_ENV
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            # Check in working directories
+            IFS=',' read -ra DIRS <<< "${{ inputs.working_directory }}"
+            ACTION_TYPE="unknown"
+            
+            for dir in "${DIRS[@]}"; do
+              dir=$(echo "$dir" | xargs) # Trim whitespace
+              if [ -f "$dir/action.yml" ] || [ -f "$dir/action.yaml" ]; then
+                if grep -E -q "using: ['\"]?docker['\"]?" "$dir/action.yml" "$dir/action.yaml" 2>/dev/null; then
+                  ACTION_TYPE="docker"
+                  break
+                elif grep -E -q "using: ['\"]?node[0-9]+['\"]?" "$dir/action.yml" "$dir/action.yaml" 2>/dev/null; then
+                  ACTION_TYPE="node"
+                  break
+                fi
+              fi
+            done
+            echo "action_type=$ACTION_TYPE" >> $GITHUB_ENV
           else
-            echo "action_type=unknown" >> $GITHUB_ENV
+            # Original logic for root directory
+            if grep -E -q "using: ['\"]?docker['\"]?" action.yml action.yaml 2>/dev/null; then
+              echo "action_type=docker" >> $GITHUB_ENV
+            elif grep -E -q "using: ['\"]?node[0-9]+['\"]?" action.yml action.yaml 2>/dev/null; then
+              echo "action_type=node" >> $GITHUB_ENV
+            else
+              echo "action_type=unknown" >> $GITHUB_ENV
+            fi
           fi
         shell: bash
 
