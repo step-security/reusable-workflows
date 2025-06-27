@@ -30,6 +30,10 @@ on:
       yarn_version:
         required: false
         type: string
+      working_directory:
+        description: "Working directory to run commands in (optional)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -73,6 +77,9 @@ jobs:
 
       - name: Install dependencies
         run: |
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            cd "${{ inputs.working_directory }}"
+          fi
           if [ "${{ inputs.package_manager }}" == "npm" ]; then
             npm ci
           else
@@ -84,12 +91,20 @@ jobs:
         run: |
           if [ "${{ inputs.package_manager }}" == "npm" ]; then
             if [ "${{ inputs.force }}" == "true" ]; then
-              BRANCH_NAME="npm-audit-fix-force"
+              BASE_BRANCH="npm-audit-fix-force"
             else
-              BRANCH_NAME="npm-audit-fix"
+              BASE_BRANCH="npm-audit-fix"
             fi
           else
-            BRANCH_NAME="yarn-audit-fix"
+            BASE_BRANCH="yarn-audit-fix"
+          fi
+          
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            # Replace slashes with dashes for valid branch name
+            WORKING_DIR_SAFE=$(echo "${{ inputs.working_directory }}" | sed 's/\//-/g')
+            BRANCH_NAME="${BASE_BRANCH}-${WORKING_DIR_SAFE}"
+          else
+            BRANCH_NAME="$BASE_BRANCH"
           fi
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
@@ -138,6 +153,9 @@ jobs:
 
       - name: Run Audit Fix
         run: |
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            cd "${{ inputs.working_directory }}"
+          fi
           if [ "${{ inputs.package_manager }}" == "npm" ]; then
             if [ "${{ inputs.force }}" == "true" ]; then
               npm audit fix --force || echo "No fixes needed"
@@ -150,12 +168,18 @@ jobs:
 
       - name: Run Specified Build Script
         run: |
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            cd "${{ inputs.working_directory }}"
+          fi
           SCRIPT="${{ inputs.script }}"
           eval "$SCRIPT" || echo "No build script found or failed, skipping."
 
       - name: Check for Changes
         id: check_changes
         run: |
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            cd "${{ inputs.working_directory }}"
+          fi
           git add .
 
           if git diff --cached --exit-code; then
@@ -293,6 +317,10 @@ jobs:
             exit 1
           fi
 
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            cd "${{ inputs.working_directory }}"
+          fi
+          
           if [ -f "package-lock.json" ]; then
             LOCKFILE="package-lock.json"
           elif [ -f "yarn.lock" ]; then
