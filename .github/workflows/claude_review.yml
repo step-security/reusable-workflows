@@ -1,0 +1,44 @@
+name: Claude review for PR and cherry-pick
+
+on:
+  workflow_call:
+    inputs:
+      direct_prompt:
+        description: "Specify direct prompt for review process"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: read
+
+jobs:
+  claude-review:    
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@88d305a3530acfa6d1939000baaa571e520df9c8 # rc
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+ 
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@ebbd9e9be4686249a2952e1a558bbaba07524380 # beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Direct prompt for automated review (no @claude mention needed)
+          direct_prompt: ${{inputs.direct_prompt}}
