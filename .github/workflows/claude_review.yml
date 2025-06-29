@@ -7,6 +7,10 @@ on:
         description: "Specify direct prompt for review process"
         required: true
         type: string
+      anthropic_api_key:
+        description: "Specify anthropic api key to be used"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -39,6 +43,6 @@ jobs:
         id: claude-review
         uses: anthropics/claude-code-action@ebbd9e9be4686249a2952e1a558bbaba07524380 # beta
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ inputs.anthropic_api_key }}
           # Direct prompt for automated review (no @claude mention needed)
           direct_prompt: ${{inputs.direct_prompt}}
