@@ -46,30 +46,42 @@ jobs:
             Please review this pull request and provide comprehensive feedback.
 
             Keep following things in mind:
+            
+            Determine whether the action is node based, docker based, composite action or multiple actions of different kinds are present
+            I am listing some common points to review for all actions and some specific points depending on type of action
 
-            - author name in package.json file should be step-security
-            - If there is a field named git repository in package.json file then it should contain the phrase step-security. If the field repository is not present then ignore.
-            - There should be a action.yml file and in that as well author name should be step-security. If the field author-name is not present then ignore.
-            - License should be present with copyright of step-security as well as original author.
-            - None of the dependencies should be unused.
-            - Security.md file should be present.
-            - renovate.json file should not be present.
-            - FUNDING.yml or funding.yml file should not be present.
-            - PULL_REQUEST.md file should not be present.
-            - ISSUE_TEMEPLATE folder should not be present.
-            - CHANGELOG.md file should not be present.
-            - Code should contain subscription check and make sure it makes call to this url "https://agent.api.stepsecurity.io/v1/github/$GITHUB_REPOSITORY/actions/subscription" for checking the subscription.
-            - dist folder should be present.
-            - .github folder should contain workflows folder and this folder should contain following files
-              - auto_cherry_pick.yml
-              - guarddog.yml
-              - actions_release.yml
-              - audit_package.yml
-              - claude_review.yml
-            - If package.json does not contain the field "build" in the scripts object or the package manager is not npm then check the files .github/workflows/audit_fix.yml and .github/workflows/actions_release.yml, they should contain script as an input.
-            - .vscode folder should not be present
-            - If Readme.md file contains any part which tells how the action should be used, then make sure that in the example complete semver tag is not used and only major version is used.
-            - Scan the whole code thoroughly for any existing security vulnerabilities that might be exploited by malicious actors.
+            Points to be taken care of for all actions:
+              - License should be present with copyright of step-security as well as original author.
+              - There should be a action.yml file and in that as well author name should be step-security. If the field author-name is not present then ignore.
+              - Security.md file should be present.
+              - FUNDING.yml or funding.yml file should not be present.
+              - .github folder should contain workflows folder and this folder should contain following files
+                - auto_cherry_pick.yml
+                - actions_release.yml
+                - claude_review.yml
+              - renovate.json file should not be present.
+              - PULL_REQUEST.md file should not be present.
+              - ISSUE_TEMEPLATE folder should not be present.
+              - CHANGELOG.md file should not be present.
+              - .vscode folder should not be present
+              - If Readme.md file contains any part which tells how the action should be used, then make sure that in the example complete semver tag is not used and only major version is used.
+              - Code should contain subscription check and make sure it makes call to this url "https://agent.api.stepsecurity.io/v1/github/$GITHUB_REPOSITORY/actions/subscription" for checking the subscription.
+              - Scan the whole code thoroughly for any existing security vulnerabilities that might be exploited by malicious actors.
+
+            Specific points for node based actions
+              - author name in package.json file should be step-security. If the field author-name is not present then ignore.
+              - If there is a field named git repository in package.json file then it should contain the phrase step-security. If the field repository is not present then ignore.
+              - None of the dependencies should be unused.
+              - dist folder should be present.
+              - If package.json does not contain the field "build" in the scripts object or the package manager is not npm then check the files .github/workflows/audit_fix.yml and .github/workflows/actions_release.yml, they should contain script as an input.
+
+            Specific points for docker based actions
+              - The action must use a published docker image
+              - The docker image must be published to step security org
+              - The docker image must be tagged with major version
+
+            Specific points for composite actions
+              - If the action uses any other action which is not an official github action, make sure it is pinned.
 
       - name: Run Claude Code Review (cherry-pick)
         if:  |
