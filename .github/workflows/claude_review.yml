@@ -34,7 +34,9 @@ jobs:
           fetch-depth: 1
  
       - name: Run Claude Code Review (Default)
-        if: contains(join(github.event.pull_request.labels.*.name, ','), 'review required')
+        if: |
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
         id: claude-review-default
         uses: anthropics/claude-code-action@ebbd9e9be4686249a2952e1a558bbaba07524380 # beta
         with:
@@ -84,4 +86,5 @@ jobs:
             Keep following things in mind:
               
             - Verify that cherry-picked changes are complete and consistent
-
+            - All the changes present in upstream repository must have been successfully included in this PR
+            - Scan all code changes for any potential security vulnerabilities
