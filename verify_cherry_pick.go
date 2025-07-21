@@ -34,10 +34,13 @@ func main() {
 	flag.Parse()
 
 	if token == "" {
-		log.Fatal("❌ GITHUB_TOKEN not provided")
+		fmt.Println("❌ GITHUB_TOKEN not provided")
+		return
 	}
 
-	ignoredPaths = strings.Split(ignored, ",")
+	if ignored != "" {
+		ignoredPaths = strings.Split(ignored, ",")
+	}
 
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
@@ -49,14 +52,16 @@ func main() {
 	// Always parse from GITHUB_REPOSITORY since it's the full repo name
 	parts := strings.Split(fullRepo, "/")
 	if len(parts) != 2 {
-		log.Fatalf("❌ Invalid GITHUB_REPOSITORY format: %s", fullRepo)
+		fmt.Printf("❌ Invalid GITHUB_REPOSITORY format: %s\n", fullRepo)
+		return
 	}
 
 	repoOwner, repoName := parts[0], parts[1]
 	fmt.Printf("🔍 Looking for PR with branch: %s in %s/%s\n", prBranch, repoOwner, repoName)
 	pr, err := findCherryPickPR(ctx, client, repoOwner, repoName, prBranch)
 	if err != nil {
-		log.Fatalf("❌ Unable to locate cherry-pick PR: %v", err)
+		fmt.Printf("❌ Unable to locate cherry-pick PR: %v\n", err)
+		return
 	}
 
 	prHeadSHA := pr.GetHead().GetSHA()
@@ -65,25 +70,29 @@ func main() {
 	// Get PR comments to find Target Release Version
 	comments, _, err := client.Issues.ListComments(ctx, repoOwner, repoName, pr.GetNumber(), nil)
 	if err != nil {
-		log.Fatalf("❌ Failed to get PR comments: %v", err)
+		fmt.Printf("❌ Failed to get PR comments: %v\n", err)
+		return
 	}
 
 	targetVersion, err := extractTargetReleaseVersionFromComments(comments)
 	if err != nil {
-		log.Fatalf("❌ Failed to extract target release version: %v", err)
+		fmt.Printf("❌ Failed to extract target release version: %v\n", err)
+		return
 	}
 
 	targetTag := targetVersion
 	prevTag, err := getPreviousTag(ctx, client, upstreamOwner, upstreamRepo, targetTag)
 	if err != nil {
-		log.Fatalf("❌ Failed to find previous tag: %v", err)
+		fmt.Printf("❌ Failed to find previous tag: %v\n", err)
+		return
 	}
 
 	fmt.Printf("🔍 Comparing %s...%s from upstream\n\n", prevTag, targetTag)
 
 	compare, _, err := client.Repositories.CompareCommits(ctx, upstreamOwner, upstreamRepo, prevTag, targetTag, nil)
 	if err != nil {
-		log.Fatalf("❌ Failed to get compare: %v", err)
+		fmt.Printf("❌ Failed to get compare: %v\n", err)
+		return
 	}
 
 	var comparisons []FileComparison
@@ -124,28 +133,18 @@ func main() {
 			}
 			continue
 		}
-		if path == ".github/workflows/test.yml" {
-			fmt.Println(upstreamPatch)
-		}
+		// Debug output can be added with a debug flag if needed
 
 		// Get PR patch for this file
-		fmt.Printf("🔍 Getting PR patch for %s from %s/%s@%s...%s\n", path, repoOwner, repoName, baseBranch, prHeadSHA)
+		fmt.Printf("🔍 Getting PR patch for %s from %s/%s %s...%s\n", path, repoOwner, repoName, baseBranch, prHeadSHA)
 		prPatch, err := getPRPatchForFile(ctx, client, repoOwner, repoName, baseBranch, prHeadSHA, path)
 		if err != nil {
 			fmt.Printf("⚠️ Failed to get PR patch: %v\n", err)
 			prPatch = "" // Continue with empty patch
 		}
 
-		if path == ".github/workflows/test.yml" {
-			fmt.Println("=== UPSTREAM PATCH ===")
-			fmt.Println(upstreamPatch)
-			fmt.Println("=== PR PATCH ===")
-			fmt.Println(prPatch)
-		}
-
 		// Compare upstream patch with PR patch to verify cherry-pick
 		isApplied, diffSummary := comparePatches(upstreamPatch, prPatch, f.GetAdditions(), f.GetDeletions())
-		fmt.Println("----", isApplied, diffSummary)
 
 		status := "missing"
 		if isApplied {
@@ -168,7 +167,8 @@ func main() {
 	}
 	_, _, err = client.Issues.CreateComment(ctx, repoOwner, repoName, pr.GetNumber(), comment)
 	if err != nil {
-		log.Fatalf("❌ Failed to post comment to PR: %v", err)
+		fmt.Printf("❌ Failed to post comment to PR: %v\n", err)
+		return
 	}
 
 	fmt.Println("✅ Verification comment posted to PR successfully")
@@ -252,8 +252,10 @@ func getFileContent(ctx context.Context, client *github.Client, owner, repo, pat
 	if err != nil || file == nil {
 		return "", err
 	}
-	content, _ := file.GetContent()
-
+	content, err := file.GetContent()
+	if err != nil {
+		return "", err
+	}
 	return content, nil
 }
 
