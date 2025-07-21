@@ -736,7 +736,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/reusable-workflows
-          ref: feature_Verify-Cherry-Pick
+          ref: feature/verify-cherry-pick
           path: reusable-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -751,7 +751,7 @@ jobs:
           go run verify_cherry_pick.go \
             --upstream-owner="${{ inputs.original-owner }}" \
             --upstream-repo="${{ inputs.repo-name }}" \
-            --base-branch="${{ inputs.base_branch }}" \
-            --pr-branch="${{ github.event.pull_request.head.ref }}" \
+            --base-branch="main" \
+            --pr-branch="auto-cherry-pick" \
             --ignored-paths="package.json,package-lock.json,yarn.lock,node_modules/,dist/,pnpm-lock.yaml,.gitignore" \
             --token="${{ secrets.GITHUB_TOKEN }}"

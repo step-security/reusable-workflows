@@ -103,17 +103,9 @@ func main() {
 			continue
 		}
 
-		// Get the base content from our PR's base branch (usually main)
-		fmt.Printf("🔍 Getting base content for %s from %s/%s@%s\n", path, repoOwner, repoName, baseBranch)
-		baseContent, err := getFileContent(ctx, client, repoOwner, repoName, path, baseBranch)
-		if err != nil {
-			// File might be new in upstream
-			baseContent = ""
-		}
-
-		// Get the current content in our PR branch
-		fmt.Printf("🔍 Getting PR content for %s from %s/%s@%s\n", path, repoOwner, repoName, prHeadSHA)
-		prContent, err := getFileContent(ctx, client, repoOwner, repoName, path, prHeadSHA)
+		// Check if file exists in PR branch
+		fmt.Printf("🔍 Checking if %s exists in PR branch %s\n", path, prHeadSHA)
+		_, err := getFileContent(ctx, client, repoOwner, repoName, path, prHeadSHA)
 		if err != nil {
 			fmt.Printf("❌ Failed to get PR content: %v\n", err)
 			// Check if the file should exist by checking if it exists upstream
@@ -132,9 +124,28 @@ func main() {
 			}
 			continue
 		}
+		if path == ".github/workflows/test.yml" {
+			fmt.Println(upstreamPatch)
+		}
 
-		// Check if the PR content matches what it should be after applying upstream changes
-		isApplied, diffSummary := verifyPatchApplied(baseContent, prContent, upstreamPatch, f.GetAdditions(), f.GetDeletions())
+		// Get PR patch for this file
+		fmt.Printf("🔍 Getting PR patch for %s from %s/%s@%s...%s\n", path, repoOwner, repoName, baseBranch, prHeadSHA)
+		prPatch, err := getPRPatchForFile(ctx, client, repoOwner, repoName, baseBranch, prHeadSHA, path)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to get PR patch: %v\n", err)
+			prPatch = "" // Continue with empty patch
+		}
+
+		if path == ".github/workflows/test.yml" {
+			fmt.Println("=== UPSTREAM PATCH ===")
+			fmt.Println(upstreamPatch)
+			fmt.Println("=== PR PATCH ===")
+			fmt.Println(prPatch)
+		}
+
+		// Compare upstream patch with PR patch to verify cherry-pick
+		isApplied, diffSummary := comparePatches(upstreamPatch, prPatch, f.GetAdditions(), f.GetDeletions())
+		fmt.Println("----", isApplied, diffSummary)
 
 		status := "missing"
 		if isApplied {
@@ -246,6 +257,27 @@ func getFileContent(ctx context.Context, client *github.Client, owner, repo, pat
 	return content, nil
 }
 
+func getPRPatchForFile(ctx context.Context, client *github.Client, owner, repo, base, head, filePath string) (string, error) {
+	// Compare base branch against PR head to get the diff
+	compare, _, err := client.Repositories.CompareCommits(ctx, owner, repo, base, head, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to compare commits: %v", err)
+	}
+
+	// Find the specific file in the comparison
+	for _, file := range compare.Files {
+		if file.GetFilename() == filePath {
+			patch := file.GetPatch()
+			if patch == "" {
+				return "", fmt.Errorf("no patch data for file: %s", filePath)
+			}
+			return patch, nil
+		}
+	}
+
+	return "", fmt.Errorf("file not found in PR diff: %s", filePath)
+}
+
 func generateDetailedMarkdownReport(target, prev string, comparisons []FileComparison) string {
 	var report strings.Builder
 
@@ -290,7 +322,7 @@ func generateDetailedMarkdownReport(target, prev string, comparisons []FileCompa
 	report.WriteString("### 📊 **Summary:**\n")
 	report.WriteString(fmt.Sprintf("- **Total files changed upstream:** %d\n", totalFiles))
 	report.WriteString(fmt.Sprintf("- **Files present in PR:** %d/%d\n", filesInPR, totalFiles))
-	report.WriteString(fmt.Sprintf("- **Files with matching changes:** %d/%d\n", changesMatched, filesInPR))
+	report.WriteString(fmt.Sprintf("- **Files with matching changes:** %d/%d\n", changesMatched, totalFiles))
 
 	// Overall status
 	if changesMatched == totalFiles {
@@ -304,39 +336,68 @@ func generateDetailedMarkdownReport(target, prev string, comparisons []FileCompa
 	return report.String()
 }
 
-func verifyPatchApplied(baseContent, prContent, upstreamPatch string, additions, deletions int) (bool, string) {
-	// Parse the patch to extract the specific changes
-	patchLines := strings.Split(upstreamPatch, "\n")
-
-	addedLines := []string{}
-	removedLines := []string{}
-
-	for _, line := range patchLines {
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-			addedLines = append(addedLines, strings.TrimPrefix(line, "+"))
-		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
-			removedLines = append(removedLines, strings.TrimPrefix(line, "-"))
-		}
+func comparePatches(upstreamPatch, prPatch string, additions, deletions int) (bool, string) {
+	if prPatch == "" {
+		return false, fmt.Sprintf("❌ No PR patch available (+%d -%d)", additions, deletions)
 	}
 
-	// Check if all added lines are present in PR content
+	// Extract changes from both patches
+	upstreamChanges := extractPatchChanges(upstreamPatch)
+	prChanges := extractPatchChanges(prPatch)
+
+	// Compare the changes
 	missingAdditions := []string{}
-	for _, addedLine := range addedLines {
-		if !strings.Contains(prContent, addedLine) {
-			missingAdditions = append(missingAdditions, addedLine)
+	missingDeletions := []string{}
+	extraAdditions := []string{}
+
+	// Check if all upstream additions are in PR
+	for _, upstreamAdd := range upstreamChanges.Additions {
+		found := false
+		for _, prAdd := range prChanges.Additions {
+			if strings.TrimSpace(upstreamAdd) == strings.TrimSpace(prAdd) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missingAdditions = append(missingAdditions, upstreamAdd)
 		}
 	}
 
-	// Check if all removed lines are absent from PR content
-	unexpectedLines := []string{}
-	for _, removedLine := range removedLines {
-		if strings.Contains(prContent, removedLine) {
-			unexpectedLines = append(unexpectedLines, removedLine)
+	// Check if all upstream deletions are in PR
+	for _, upstreamDel := range upstreamChanges.Deletions {
+		found := false
+		for _, prDel := range prChanges.Deletions {
+			if strings.TrimSpace(upstreamDel) == strings.TrimSpace(prDel) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missingDeletions = append(missingDeletions, upstreamDel)
+		}
+	}
+
+	// Check for extra additions in PR that aren't in upstream (could be legitimate)
+	for _, prAdd := range prChanges.Additions {
+		found := false
+		for _, upstreamAdd := range upstreamChanges.Additions {
+			if strings.TrimSpace(prAdd) == strings.TrimSpace(upstreamAdd) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			extraAdditions = append(extraAdditions, prAdd)
 		}
 	}
 
 	// Generate summary
-	if len(missingAdditions) == 0 && len(unexpectedLines) == 0 {
+	if len(missingAdditions) == 0 && len(missingDeletions) == 0 {
+		if len(extraAdditions) > 0 {
+			return true, fmt.Sprintf("✅ All upstream changes applied (+%d -%d) with %d additional changes",
+				additions, deletions, len(extraAdditions))
+		}
 		return true, fmt.Sprintf("✅ All changes applied correctly (+%d -%d)", additions, deletions)
 	}
 
@@ -344,9 +405,29 @@ func verifyPatchApplied(baseContent, prContent, upstreamPatch string, additions,
 	if len(missingAdditions) > 0 {
 		summary += fmt.Sprintf(" | Missing %d additions", len(missingAdditions))
 	}
-	if len(unexpectedLines) > 0 {
-		summary += fmt.Sprintf(" | %d lines should be removed", len(unexpectedLines))
+	if len(missingDeletions) > 0 {
+		summary += fmt.Sprintf(" | Missing %d deletions", len(missingDeletions))
 	}
 
 	return false, summary
+}
+
+type PatchChanges struct {
+	Additions []string
+	Deletions []string
+}
+
+func extractPatchChanges(patch string) PatchChanges {
+	changes := PatchChanges{}
+	lines := strings.Split(patch, "\n")
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			changes.Additions = append(changes.Additions, strings.TrimPrefix(line, "+"))
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			changes.Deletions = append(changes.Deletions, strings.TrimPrefix(line, "-"))
+		}
+	}
+
+	return changes
 }
