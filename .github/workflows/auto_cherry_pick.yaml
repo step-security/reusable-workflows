@@ -751,4 +751,5 @@ jobs:
           go run verify_cherry_pick.go \
             --upstream-owner="${{ inputs.original-owner }}" \
             --upstream-repo="${{ inputs.repo-name }}" \
-            --ignored-paths="package.json,package-lock.json,yarn.lock,node_modules/,dist/,pnpm-lock.yaml,.gitignore"
+            --ignored-paths="package.json,package-lock.json,yarn.lock,node_modules/,dist/,pnpm-lock.yaml,.gitignore" \
+            --token="${{ secrets.GITHUB_TOKEN }}"
