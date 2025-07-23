@@ -107,10 +107,10 @@ jobs:
       - name: Fetch Previous Tag
         id: previous-tag
         run: |
-          git fetch --tags
-          TAGS=$(git tag --sort=-version:refname)
-          PREVIOUS_TAG=$(echo "$TAGS" | grep -v "^${{ inputs.tag }}$" | head -n 1)
+          PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
           echo "**Previous Tag**: $PREVIOUS_TAG" >> $GITHUB_STEP_SUMMARY
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Node.js
         if: env.action_type == 'node'
