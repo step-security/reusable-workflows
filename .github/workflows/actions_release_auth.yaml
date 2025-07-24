@@ -82,7 +82,7 @@ jobs:
       - name: Fetch Previous Tag
         id: previous-tag
         run: |
-          PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // "None"')
           echo "**Previous Tag**: $PREVIOUS_TAG" >> $GITHUB_STEP_SUMMARY
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
