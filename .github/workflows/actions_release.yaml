@@ -104,6 +104,14 @@ jobs:
             exit 1
           fi
 
+      - name: Fetch Previous Tag
+        id: previous-tag
+        run: |
+          PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // "None"')
+          echo "**Previous Tag**: $PREVIOUS_TAG" >> $GITHUB_STEP_SUMMARY
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Node.js
         if: env.action_type == 'node'
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
