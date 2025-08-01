@@ -33,6 +33,11 @@ on:
       yarn_version:
         required: false
         type: string
+      mode:
+        description: "Run mode: 'cherry-pick' (default) or 'verify'"
+        required: false
+        default: "cherry-pick"
+        type: string
 
 permissions:
   contents: write
@@ -45,6 +50,7 @@ env:
 
 jobs:
   check-upstream:
+    if: inputs.mode != 'verify'
     name: Cherry-Pick & Create PR
     runs-on: ubuntu-latest
     steps:
@@ -709,3 +715,41 @@ jobs:
             echo "📝 Creating a new comment on PR #$PR_NUMBER"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$COMMENT_BODY"
           fi
+
+  verify-upstream:
+    if: inputs.mode == 'verify'
+    name: Verify Cherry-Pick Matches
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Checkout Reusable Workflows Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/reusable-workflows
+          ref: feature/verify-cherry-pick
+          path: reusable-workflows
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run Go-based Verification
+        run: |
+          cd reusable-workflows
+          go run verify_cherry_pick.go \
+            --upstream-owner="${{ inputs.original-owner }}" \
+            --upstream-repo="${{ inputs.repo-name }}" \
+            --ignored-paths="package.json,package-lock.json,yarn.lock,node_modules/,dist/,pnpm-lock.yaml,.gitignore" \
+            --token="${{ secrets.GITHUB_TOKEN }}"
