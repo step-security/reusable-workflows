@@ -36,9 +36,15 @@ jobs:
           echo "local_issue_count=$count" >> $GITHUB_ENV
 
           if [ "$count" -gt 0 ]; then
+            echo ""
+            echo "🚨 ======================================"
             echo "❌ GuardDog found $count local issue(s)"
+            echo "🚨 ======================================"
+            echo ""
           else
+            echo ""
             echo "✅ No local issues found"
+            echo ""
           fi
 
       - name: 🔍 Dependency scan (package.json)
@@ -52,34 +58,51 @@ jobs:
           echo "dep_issue_count=$count" >> $GITHUB_ENV
 
           if [ "$count" -gt 0 ]; then
+            echo ""
+            echo "🚨 ======================================"
             echo "❌ GuardDog found $count dependency issue(s)"
+            echo "🚨 ======================================"
             echo ""
             echo "📋 Summary of issues:"
             echo "-----------------------------------"
-
-          jq -r '
-            .[]
-            | select(.result.issues > 0)
-            | "🔸 \(.dependency)@\(.version)",
-              (
-                .result.results
-                | to_entries[]
-                | select(
-                    (.value | type == "array" and length > 0)
-                    or
-                    (.value | type == "string" and length > 0)
-                  )
-                | { (.key): .value } | @json
-              ), ""
-          ' guarddog_deps.json
+            
+            jq -r '
+              .[]
+              | select(.result.issues > 0)
+              | "🔸 \(.dependency)@\(.version)",
+                (
+                  .result.results
+                  | to_entries[]
+                  | select(
+                      (.value | type == "array" and length > 0)
+                      or
+                      (.value | type == "string" and length > 0)
+                    )
+                  | { (.key): .value } | @json
+                ), ""
+            ' guarddog_deps.json
+            
+            echo "-----------------------------------"
+            echo ""
           else
+            echo ""
             echo "✅ No dependency issues found"
+            echo ""
           fi
 
       - name: 🔴 Fail if any issues found
         run: |
-          if [ "${local_issue_count}" -gt 0 ] || [ "${dep_issue_count}" -gt 0 ]; then
-            echo "🚨 GuardDog found issues in scan(s)"
+          local_count=${local_issue_count:-0}
+          dep_count=${dep_issue_count:-0}
+          
+          if [ "$local_count" -gt 0 ] && [ "$dep_count" -gt 0 ]; then
+            echo "🚨 GuardDog found issues in both local files ($local_count) and dependencies ($dep_count)"
+            exit 1
+          elif [ "$local_count" -gt 0 ]; then
+            echo "🚨 GuardDog found $local_count issue(s) in local files scan"
+            exit 1
+          elif [ "$dep_count" -gt 0 ]; then
+            echo "🚨 GuardDog found $dep_count issue(s) in dependency scan"
             exit 1
           else
             echo "✅ All scans passed"

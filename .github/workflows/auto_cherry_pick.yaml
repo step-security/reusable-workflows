@@ -139,7 +139,19 @@ jobs:
             echo "⚠️ No tracking issue found. Creating one..."
 
             RELEASE_VERSION_TYPE="vx.x.x"
-            LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')  # current timestamp
+            
+            # Get the last release date instead of current date
+            echo "🔍 Getting last release date for initial sync date..."
+            LAST_RELEASE=$(gh release list --limit 1 --json tagName,publishedAt --jq '.[0]')
+            
+            if [[ -n "$LAST_RELEASE" && "$LAST_RELEASE" != "null" ]]; then
+              LAST_SYNC_DATE=$(echo "$LAST_RELEASE" | jq -r '.publishedAt')
+              LAST_TAG=$(echo "$LAST_RELEASE" | jq -r '.tagName')
+              echo "📌 Using last release date: $LAST_SYNC_DATE (from $LAST_TAG)"
+            else
+              echo "⚠️ No releases found, using current date as fallback"
+              LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            fi
 
             BODY=$(printf "Last Sync Date: %s\nRelease Version Type: %s" "$LAST_SYNC_DATE" "$RELEASE_VERSION_TYPE")
 
@@ -359,7 +371,7 @@ jobs:
 
                 if [[ "$FILE_RESPONSE" == "ERROR" ]] || [[ -z "$SHA" ]] || [[ "$SHA" == "null" ]] || [[ "$FILE_RESPONSE" == *"Not Found"* ]]; then
                   echo "⚠️ File $file does not exist in target repo."
-                  MISSING_FILES="${MISSING_FILES}\n$file"
+                  MISSING_FILES="${MISSING_FILES}\n$file:$COMMIT_HASH"
                   continue
                 fi
 
@@ -671,8 +683,11 @@ jobs:
             fi
             if [ -n "${{ env.MISSING_FILES }}" ]; then
               echo "❗ Missing Files:"
-              while IFS= read -r line; do
-                echo "- $line"
+              while IFS= read -r entry; do
+                if [[ -z "$entry" ]]; then continue; fi
+                file_path=$(echo "$entry" | cut -d':' -f1)
+                commit_sha=$(echo "$entry" | cut -d':' -f2)
+                echo "- \`$file_path\` from commit \`$commit_sha\`"
               done <<< "${{ env.MISSING_FILES }}"
               echo ""
             fi
