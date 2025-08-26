@@ -114,8 +114,10 @@ func main() {
 
 		// Check if file exists in PR branch
 		fmt.Printf("🔍 Checking if %s exists in PR branch %s\n", path, prHeadSHA)
+		var status string
 		_, err := getFileContent(ctx, client, repoOwner, repoName, path, prHeadSHA)
 		if err != nil {
+			status = "missing"
 			fmt.Printf("❌ Failed to get PR content: %v\n", err)
 			// Check if the file should exist by checking if it exists upstream
 			_, upstreamErr := getFileContent(ctx, client, upstreamOwner, upstreamRepo, path, targetTag)
@@ -146,7 +148,6 @@ func main() {
 		// Compare upstream patch with PR patch to verify cherry-pick
 		isApplied, diffSummary := comparePatches(upstreamPatch, prPatch, f.GetAdditions(), f.GetDeletions())
 
-		status := "missing"
 		if isApplied {
 			status = "matched"
 		}
