@@ -171,6 +171,11 @@ jobs:
           echo "🔍 Finding first release after: $CHECK_DATE"
           releases=$(gh release list --limit 100 --json tagName,publishedAt \
             --jq 'sort_by(.publishedAt) | .[] | [.tagName, .publishedAt] | @tsv')
+          
+          echo "🔧 DEBUG: Raw releases data:"
+          echo "$releases"
+          echo "🔧 DEBUG: Release count: $(echo "$releases" | wc -l)"
+          
           prev_tag=""
           prev_date=""
           found=false
@@ -194,20 +199,26 @@ jobs:
           esac
 
           while IFS=$'\t' read -r tag date; do
+            echo "🔧 DEBUG: Processing release: $tag ($date)"
             if [[ "$tag" =~ $SEMVER_REGEX ]]; then
+              echo "🔧 DEBUG: $tag matches regex pattern"
+              echo "🔧 DEBUG: Comparing $date > $CHECK_DATE"
               if [[ "$date" > "$CHECK_DATE" && "$found" == "false" ]]; then
                 echo "✅ Found semantic release after $CHECK_DATE: $tag ($date)"
+                echo "🔧 DEBUG: prev_tag value: '$prev_tag'"
                 echo "RELEASE_TAG=$tag" >> $GITHUB_ENV
                 echo "RELEASE_DATE=$date" >> $GITHUB_ENV
                 if [ -n "$prev_tag" ]; then
                   echo "↩️ Previous release: $prev_tag ($prev_date)"
                   echo "PREVIOUS_TAG=$prev_tag" >> $GITHUB_ENV
                   echo "PREVIOUS_DATE=$prev_date" >> $GITHUB_ENV
+                  echo "🔧 DEBUG: Getting commits from $prev_tag to $tag"
                   compare_result=$(gh api repos/$UPSTREAM_OWNER/$UPSTREAM_REPO/compare/$prev_tag...$tag)
                   commit_shas=$(echo "$compare_result" | jq -r '.commits[]?.sha')
                 else
                   echo "⚠️ No previous release found. Using all commits in $tag"
-                  commit_shas=$(gh api repos/${{ github.repository }}/commits?sha=$tag | jq -r '.[].sha')
+                  echo "🔧 DEBUG: Getting all commits for tag $tag from upstream repo"
+                  commit_shas=$(gh api repos/$UPSTREAM_OWNER/$UPSTREAM_REPO/commits?sha=$tag | jq -r '.[].sha')
                 fi
                 echo "🆕 Commits in release $tag:"
                 echo "$commit_shas"
@@ -219,6 +230,9 @@ jobs:
               fi
               prev_tag="$tag"
               prev_date="$date"
+              echo "🔧 DEBUG: Set prev_tag to: $prev_tag"
+            else
+              echo "🔧 DEBUG: $tag does NOT match regex pattern $SEMVER_REGEX"
             fi
           done <<< "$releases"
 
