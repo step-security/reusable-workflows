@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/google/go-github/v57/github"
@@ -242,26 +241,6 @@ func extractPreviousVersionFromText(text string) string {
 		}
 	}
 	return ""
-}
-
-func getPreviousTag(ctx context.Context, client *github.Client, owner, repo, currentTag string) (string, error) {
-	releases, _, err := client.Repositories.ListReleases(ctx, owner, repo, &github.ListOptions{PerPage: 100})
-	if err != nil {
-		return "", err
-	}
-	var tags []string
-	for _, r := range releases {
-		tags = append(tags, r.GetTagName())
-	}
-	sort.Slice(tags, func(i, j int) bool {
-		return tags[i] < tags[j]
-	})
-	for i, tag := range tags {
-		if tag == currentTag && i > 0 {
-			return tags[i-1], nil
-		}
-	}
-	return "", fmt.Errorf("could not determine previous tag")
 }
 
 func isIgnored(path string) bool {
