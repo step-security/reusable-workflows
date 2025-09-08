@@ -81,7 +81,7 @@ func main() {
 	}
 
 	targetTag := targetVersion
-	prevTag, err := getPreviousTag(ctx, client, upstreamOwner, upstreamRepo, targetTag)
+	prevTag, err := extractPreviousReleaseVersionFromComments(comments)
 	if err != nil {
 		fmt.Printf("❌ Failed to find previous tag: %v\n", err)
 		return
@@ -204,6 +204,33 @@ func extractVersionFromText(text string) string {
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "📦 Target Release Version:") {
+			parts := strings.Split(line, "`")
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				return fields[len(fields)-1]
+			}
+		}
+	}
+	return ""
+}
+
+func extractPreviousReleaseVersionFromComments(comments []*github.IssueComment) (string, error) {
+	for _, comment := range comments {
+		body := comment.GetBody()
+		if version := extractPreviousVersionFromText(body); version != "" {
+			return version, nil
+		}
+	}
+	return "", fmt.Errorf("previous Release Version not found in PR comments")
+}
+
+func extractPreviousVersionFromText(text string) string {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "📋 Previous Release Version:") {
 			parts := strings.Split(line, "`")
 			if len(parts) >= 2 {
 				return parts[1]

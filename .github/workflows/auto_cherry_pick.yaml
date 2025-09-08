@@ -671,6 +671,9 @@ jobs:
 
             if [ -n "${{ env.RELEASE_TAG }}" ]; then
               echo "📦 Target Release Version: \`${{ env.RELEASE_TAG }}\`"
+              if [ -n "${{ env.PREVIOUS_TAG }}" ]; then
+                echo "📋 Previous Release Version: \`${{ env.PREVIOUS_TAG }}\`"
+              fi
               echo ""
             fi
             if [ -n "${{ env.SKIPPED_COMMITS }}" ]; then
