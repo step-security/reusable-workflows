@@ -129,30 +129,39 @@ jobs:
           
           LAST_SYNC_DATE=""
           RELEASE_VERSION_TYPE="vx.x.x"
+          PREV_RELEASE_VERSION_TYPE=""
 
           if [[ -n "$ISSUE_NUMBER" ]]; then
             echo "✅ Found existing sync tracking issue #$ISSUE_NUMBER."
             ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json body --jq '.body')
 
-            # Extract values from body
-            LAST_SYNC_DATE=$(echo "$ISSUE_BODY" | grep -oE 'Last Sync Date: [0-9TZ:-]+' | cut -d' ' -f4)
-            if echo "$ISSUE_BODY" | grep -q "Release Version Type:"; then
-              RELEASE_VERSION_TYPE=$(echo "$ISSUE_BODY" | grep -oE 'Release Version Type: [a-z\.]+' | cut -d' ' -f4)
-              echo "📌 Release Version Type: $RELEASE_VERSION_TYPE"
-            else
-              echo "⚠️ 'Release Version Type' not found in issue body. Defaulting to vx.x.x"
+            # Extract values from body (first matching line only)
+            LAST_SYNC_DATE=$(echo "$ISSUE_BODY" | grep "^Last Sync Date:" | head -n1 | cut -d':' -f2- | xargs)
+            RELEASE_VERSION_TYPE=$(echo "$ISSUE_BODY" | grep "^Release Version Type:" | head -n1 | cut -d':' -f2 | xargs)
+            PREV_RELEASE_VERSION_TYPE=$(echo "$ISSUE_BODY" | grep "^Prev Release Version Type:" | head -n1 | cut -d':' -f2 | xargs)
+
+            # Fallbacks if missing
+            if [[ -z "$RELEASE_VERSION_TYPE" ]]; then
+              echo "⚠️ 'Release Version Type' not found. Defaulting to vx.x.x"
               RELEASE_VERSION_TYPE="vx.x.x"
+            fi
+            if [[ -z "$PREV_RELEASE_VERSION_TYPE" ]]; then
+              echo "⚠️ 'Prev Release Version Type' not found. Using same as Release Version Type"
+              PREV_RELEASE_VERSION_TYPE="$RELEASE_VERSION_TYPE"
             fi
 
             echo "📌 Last Sync Date: $LAST_SYNC_DATE"
             echo "📌 Release Version Type: $RELEASE_VERSION_TYPE"
+            echo "📌 Prev Release Version Type: $PREV_RELEASE_VERSION_TYPE"
           else
             echo "⚠️ No tracking issue found. Creating one..."
 
             RELEASE_VERSION_TYPE="vx.x.x"
+            PREV_RELEASE_VERSION_TYPE="vx.x.x"
             LAST_SYNC_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')  # current timestamp
 
-            BODY=$(printf "Last Sync Date: %s\nRelease Version Type: %s" "$LAST_SYNC_DATE" "$RELEASE_VERSION_TYPE")
+            BODY=$(printf "Last Sync Date: %s\nRelease Version Type: %s\nPrev Release Version Type: %s" \
+              "$LAST_SYNC_DATE" "$RELEASE_VERSION_TYPE" "$PREV_RELEASE_VERSION_TYPE")
 
             ISSUE_URL=$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --body "$BODY" | grep -oE 'https://github.com/[^ ]+')
             if [[ -z "$ISSUE_URL" ]]; then
@@ -164,9 +173,22 @@ jobs:
             echo "✅ Created new tracking issue #$ISSUE_NUMBER at $ISSUE_URL"
           fi
 
+          # Sanitize everything before exporting
+          LAST_SYNC_DATE=$(echo "$LAST_SYNC_DATE" | tr -d '\r' | tr -cd '[:print:]' | xargs)
+          RELEASE_VERSION_TYPE=$(echo "$RELEASE_VERSION_TYPE" | tr -d '\r' | tr -cd '[:print:]' | xargs)
+          PREV_RELEASE_VERSION_TYPE=$(echo "$PREV_RELEASE_VERSION_TYPE" | tr -d '\r' | tr -cd '[:print:]' | xargs)
+
+          echo "🔍 DEBUG: Exporting values"
+          echo "  LAST_SYNC_DATE='$LAST_SYNC_DATE'"
+          echo "  ISSUE_NUMBER='$ISSUE_NUMBER'"
+          echo "  RELEASE_VERSION_TYPE='$RELEASE_VERSION_TYPE'"
+          echo "  PREV_RELEASE_VERSION_TYPE='$PREV_RELEASE_VERSION_TYPE'"
+
+          # Export to GitHub env
           echo "LAST_SYNC_DATE=$LAST_SYNC_DATE" >> $GITHUB_ENV
           echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> $GITHUB_ENV
           echo "RELEASE_VERSION_TYPE=$RELEASE_VERSION_TYPE" >> $GITHUB_ENV
+          echo "PREV_RELEASE_VERSION_TYPE=$PREV_RELEASE_VERSION_TYPE" >> $GITHUB_ENV
 
 
       - name: Get New Commits from Release After LAST_SYNC_DATE
@@ -198,9 +220,34 @@ jobs:
               ;;
           esac
 
+          case "$PREV_RELEASE_VERSION_TYPE" in
+            vx.x.x)
+              PREV_SEMVER_REGEX="^v([0-9]+)\.([0-9]+)\.([0-9]+)$"
+              ;;
+            vx.x)
+              PREV_SEMVER_REGEX="^v([0-9]+)\.([0-9]+)$"
+              ;;
+            vx)
+              PREV_SEMVER_REGEX="^v([0-9]+)$"
+              ;;
+            *)
+              echo "❌ Unknown PREV_RELEASE_VERSION_TYPE: $PREV_RELEASE_VERSION_TYPE"
+              exit 1
+              ;;
+          esac
+
+          echo "🔍 Current Release Pattern: $SEMVER_REGEX (Type: $RELEASE_VERSION_TYPE)"
+          echo "🔍 Previous Release Pattern: $PREV_SEMVER_REGEX (Type: $PREV_RELEASE_VERSION_TYPE)"
+
+          echo "📋 Scanning releases chronologically..."
+          
           while IFS=$'\t' read -r tag date; do
+            echo "🔄 Processing release: $tag ($date)"
+            
             if [[ "$tag" =~ $SEMVER_REGEX ]]; then
+              echo "  ✅ Matches current release pattern ($RELEASE_VERSION_TYPE)"
               if [[ "$date" > "$CHECK_DATE" && "$found" == "false" ]]; then
+                echo "  🎯 This is our target release (after $CHECK_DATE)"
                 echo "✅ Found semantic release after $CHECK_DATE: $tag ($date)"
                 echo "RELEASE_TAG=$tag" >> $GITHUB_ENV
                 echo "RELEASE_DATE=$date" >> $GITHUB_ENV
@@ -221,11 +268,23 @@ jobs:
                 echo "EOF" >> $GITHUB_ENV
                 found=true
                 break
+              else
+                echo "  ⏭️ Skipping (either before $CHECK_DATE or already found target)"
               fi
-              prev_tag="$tag"
-              prev_date="$date"
+            elif [[ "$tag" =~ $PREV_SEMVER_REGEX ]]; then
+              echo "  📌 Matches previous release pattern ($PREV_RELEASE_VERSION_TYPE)"
+              if [[ "$found" == "false" ]]; then
+                echo "  💾 Storing as previous release candidate"
+                prev_tag="$tag"
+                prev_date="$date"
+              else
+                echo "  ⏭️ Skipping (already found target release)"
+              fi
+            else
+              echo "  ❌ No pattern match - ignoring"
             fi
           done <<< "$releases"
+
 
           if [ "$found" == "false" ]; then
             echo "❌ No semantic release found after $CHECK_DATE"
