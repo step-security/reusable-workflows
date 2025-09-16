@@ -270,8 +270,14 @@ jobs:
                 break
               else
                 echo "  ⏭️ Skipping (either before $CHECK_DATE or already found target)"
+                # If release types are the same, store this as previous release candidate
+                if [[ "$RELEASE_VERSION_TYPE" == "$PREV_RELEASE_VERSION_TYPE" && "$found" == "false" ]]; then
+                  echo "  💾 Storing as previous release candidate (same release type)"
+                  prev_tag="$tag"
+                  prev_date="$date"
+                fi
               fi
-            elif [[ "$tag" =~ $PREV_SEMVER_REGEX ]]; then
+            elif [[ "$RELEASE_VERSION_TYPE" != "$PREV_RELEASE_VERSION_TYPE" && "$tag" =~ $PREV_SEMVER_REGEX ]]; then
               echo "  📌 Matches previous release pattern ($PREV_RELEASE_VERSION_TYPE)"
               if [[ "$found" == "false" ]]; then
                 echo "  💾 Storing as previous release candidate"
