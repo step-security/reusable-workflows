@@ -38,6 +38,11 @@ on:
         required: false
         default: "cherry-pick"
         type: string
+      node_version:
+        description: "Specify Node.js version"
+        required: false
+        type: string
+        default: "20"
 
 permissions:
   contents: write
@@ -461,7 +466,7 @@ jobs:
           CHANGES: ${{ env.CHANGES }}
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
-          node-version: "20"
+          node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
           
       - name: Authenticate npm with GitHub Packages (if using private packages)
@@ -666,6 +671,9 @@ jobs:
 
             if [ -n "${{ env.RELEASE_TAG }}" ]; then
               echo "📦 Target Release Version: \`${{ env.RELEASE_TAG }}\`"
+              if [ -n "${{ env.PREVIOUS_TAG }}" ]; then
+                echo "📋 Previous Release Version: \`${{ env.PREVIOUS_TAG }}\`"
+              fi
               echo ""
             fi
             if [ -n "${{ env.SKIPPED_COMMITS }}" ]; then
@@ -741,7 +749,7 @@ jobs:
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           repository: ${{ github.repository_owner }}/reusable-workflows
-          ref: feature/verify-cherry-pick
+          ref: fix_Verify_cherry_pick-Logic
           path: reusable-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 

@@ -11,6 +11,11 @@ on:
         required: false
         type: string
         default: "npm run build"
+      node_version:
+        description: "Specify Node.js version (e.g., '18', '20', 'lts/*')"
+        required: false
+        type: string
+        default: "20"
 
 permissions:
   contents: read
@@ -91,7 +96,7 @@ jobs:
         if: env.action_type == 'node'
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
         with:
-          node-version: '20'
+          node-version: ${{ inputs.node_version }}
       
       - name: Install dependencies
         if: env.action_type == 'node'
