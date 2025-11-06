@@ -58,7 +58,6 @@ jobs:
               - .github folder should contain workflows folder and this folder should contain following files
                 - auto_cherry_pick.yml
                 - actions_release.yml
-                - claude_review.yml
               - renovate.json file should not be present.
               - PULL_REQUEST.md file should not be present.
               - ISSUE_TEMEPLATE folder should not be present.
