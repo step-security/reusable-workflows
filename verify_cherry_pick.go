@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/google/go-github/v57/github"
@@ -81,7 +80,7 @@ func main() {
 	}
 
 	targetTag := targetVersion
-	prevTag, err := getPreviousTag(ctx, client, upstreamOwner, upstreamRepo, targetTag)
+	prevTag, err := extractPreviousReleaseVersionFromComments(comments)
 	if err != nil {
 		fmt.Printf("❌ Failed to find previous tag: %v\n", err)
 		return
@@ -143,10 +142,14 @@ func main() {
 			prPatch = "" // Continue with empty patch
 		}
 
+		var status string
+		if prPatch == "" {
+			status = "missing"
+		}
+
 		// Compare upstream patch with PR patch to verify cherry-pick
 		isApplied, diffSummary := comparePatches(upstreamPatch, prPatch, f.GetAdditions(), f.GetDeletions())
 
-		status := "missing"
 		if isApplied {
 			status = "matched"
 		}
@@ -213,24 +216,31 @@ func extractVersionFromText(text string) string {
 	return ""
 }
 
-func getPreviousTag(ctx context.Context, client *github.Client, owner, repo, currentTag string) (string, error) {
-	releases, _, err := client.Repositories.ListReleases(ctx, owner, repo, &github.ListOptions{PerPage: 100})
-	if err != nil {
-		return "", err
-	}
-	var tags []string
-	for _, r := range releases {
-		tags = append(tags, r.GetTagName())
-	}
-	sort.Slice(tags, func(i, j int) bool {
-		return tags[i] < tags[j]
-	})
-	for i, tag := range tags {
-		if tag == currentTag && i > 0 {
-			return tags[i-1], nil
+func extractPreviousReleaseVersionFromComments(comments []*github.IssueComment) (string, error) {
+	for _, comment := range comments {
+		body := comment.GetBody()
+		if version := extractPreviousVersionFromText(body); version != "" {
+			return version, nil
 		}
 	}
-	return "", fmt.Errorf("could not determine previous tag")
+	return "", fmt.Errorf("previous Release Version not found in PR comments")
+}
+
+func extractPreviousVersionFromText(text string) string {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "📋 Previous Release Version:") {
+			parts := strings.Split(line, "`")
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				return fields[len(fields)-1]
+			}
+		}
+	}
+	return ""
 }
 
 func isIgnored(path string) bool {

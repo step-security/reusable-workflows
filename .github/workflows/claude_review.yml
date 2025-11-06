@@ -35,7 +35,7 @@ jobs:
  
       - name: Run Claude Code Review (Default)
         if: |
-          contains(join(github.event.pull_request.labels.*.name, ','), 'review required') &&
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
           !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
         id: claude-review-default
         uses: anthropics/claude-code-action@ebbd9e9be4686249a2952e1a558bbaba07524380 # beta
