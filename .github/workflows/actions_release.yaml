@@ -18,6 +18,11 @@ on:
         description: "Working directories to run commands in (comma-separated, optional)"
         required: false
         type: string
+      setup_node:
+        description: "Force Node.js setup and build steps to run even if action type is not node"
+        required: false
+        type: boolean
+        default: false
       node_version:
         description: "Specify Node.js version (e.g., '18', '20', 'lts/*')"
         required: false
@@ -192,7 +197,7 @@ jobs:
         shell: bash
 
       - name: Install dependencies in working directories
-        if: env.action_type == 'node' && inputs.working_directory != '' && inputs.working_directory != null
+        if: (env.action_type == 'node' || inputs.setup_node == true) && inputs.working_directory != '' && inputs.working_directory != null
         run: |
           IFS=',' read -ra DIRS <<< "${{ inputs.working_directory }}"
           for dir in "${DIRS[@]}"; do
@@ -211,7 +216,7 @@ jobs:
           done
 
       - name: Build and Compare Dist in working directories
-        if: env.action_type == 'node' && inputs.working_directory != '' && inputs.working_directory != null
+        if: (env.action_type == 'node' || inputs.setup_node == true) && inputs.working_directory != '' && inputs.working_directory != null
         id: build-working-dirs
         run: |
           SCRIPT="${{ inputs.script }}"
