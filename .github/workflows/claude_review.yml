@@ -38,7 +38,7 @@ jobs:
           contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
           !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
         id: claude-review-default
-        uses: anthropics/claude-code-action@ebbd9e9be4686249a2952e1a558bbaba07524380 # beta
+        uses: anthropics/claude-code-action@1b8ee3b94104046d71fde52ec3557651ad8c0d71 # v1.0.29
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           # Direct prompt for automated review (no @claude mention needed)
@@ -87,7 +87,7 @@ jobs:
           (github.event.pull_request.title == 'chore: Cherry-picked changes from upstream') && 
           contains(join(github.event.pull_request.labels.*.name, ','), 'review required')
         id: claude-review-cherry-pick
-        uses: anthropics/claude-code-action@ebbd9e9be4686249a2952e1a558bbaba07524380 # beta
+        uses: anthropics/claude-code-action@1b8ee3b94104046d71fde52ec3557651ad8c0d71 # v1.0.29
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           # Direct prompt for automated review (no @claude mention needed)
