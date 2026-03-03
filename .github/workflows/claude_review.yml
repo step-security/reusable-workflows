@@ -64,7 +64,7 @@ jobs:
               - CHANGELOG.md file should not be present.
               - .vscode folder should not be present
               - If Readme.md file contains any part which tells how the action should be used, then make sure that in the example complete semver tag is not used and only major version is used.
-              - Code should contain subscription check and make sure it makes call to this url "https://agent.api.stepsecurity.io/v1/github/$GITHUB_REPOSITORY/actions/subscription" for checking the subscription.
+              - Code should contain subscription check and make sure it makes call to this url "https://agent.api.stepsecurity.io/v1/github/$GITHUB_REPOSITORY/actions/maintained-actions-subscription" for checking the subscription.
               - Scan the whole code thoroughly for any existing security vulnerabilities that might be exploited by malicious actors.
 
             Specific points for node based actions
