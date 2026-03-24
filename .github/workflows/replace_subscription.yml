@@ -80,10 +80,6 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
           cache: ${{ inputs.package_manager }}
-          cache-dependency-path: |
-            target-repo/${{ inputs.working_directory }}/package-lock.json
-            target-repo/${{ inputs.working_directory }}/npm-shrinkwrap.json
-            target-repo/${{ inputs.working_directory }}/yarn.lock
 
       - name: Authenticate npm with GitHub Packages (if using private packages)
         if: inputs.use_private_packages == true
