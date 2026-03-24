@@ -50,7 +50,7 @@ const replacement = `async function validateSubscription() {
   }
 }`
 
-var signatureRE = regexp.MustCompile(`async\s+function\s+validateSubscription\s*$begin:math:text$\[\^\)\]\*$end:math:text$\s*(?::\s*Promise<[^>]+>)?\s*\{`)
+var signatureRE = regexp.MustCompile(`async\s+function\s+validateSubscription\s*\([^)]*\)\s*(?::\s*Promise<[^>]+>)?\s*\{`)
 
 func main() {
 	root, err := os.Getwd()
