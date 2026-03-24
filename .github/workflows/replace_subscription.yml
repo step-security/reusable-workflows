@@ -1,0 +1,135 @@
+name: Update validateSubscription
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: "Repository to update in owner/repo format"
+        required: true
+        type: string
+      package_manager:
+        description: "Specify package manager (npm or yarn)"
+        required: false
+        type: choice
+        options:
+          - npm
+          - yarn
+        default: npm
+      use_private_packages:
+        description: "Use private packages"
+        required: false
+        type: boolean
+        default: false
+      script:
+        description: "Specify the npm/yarn script to run"
+        required: false
+        type: string
+        default: "npm run build"
+      yarn_version:
+        description: "Yarn version to use if package_manager=yarn"
+        required: false
+        type: string
+      working_directory:
+        description: "Working directory inside repo"
+        required: false
+        type: string
+        default: "."
+      node_version:
+        description: "Specify Node.js version"
+        required: false
+        type: string
+        default: "20"
+
+jobs:
+  update-subscription-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout automation repo
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Clone target repository
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          REPO_NAME: ${{ inputs.repo_name }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO_NAME}.git" target-repo
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: |
+            target-repo/${{ inputs.working_directory }}/package-lock.json
+            target-repo/${{ inputs.working_directory }}/npm-shrinkwrap.json
+            target-repo/${{ inputs.working_directory }}/yarn.lock
+
+      - name: Setup Yarn
+        if: ${{ inputs.package_manager == 'yarn' && inputs.yarn_version != '' }}
+        run: |
+          corepack enable
+          corepack prepare yarn@${{ inputs.yarn_version }} --activate
+
+      - name: Configure private packages
+        if: ${{ inputs.use_private_packages }}
+        working-directory: target-repo/${{ inputs.working_directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NODE_AUTH_TOKEN secret is required when use_private_packages=true"
+            exit 1
+          fi
+
+          cat <<EOF > .npmrc
+          //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+          always-auth=true
+          EOF
+
+      - name: Replace validateSubscription block
+        working-directory: target-repo/${{ inputs.working_directory }}
+        run: |
+          go run "${GITHUB_WORKSPACE}/scripts/replace_validate_subscription.go"
+
+      - name: Install dependencies
+        working-directory: target-repo/${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile || yarn install
+          else
+            npm ci || npm install
+          fi
+
+      - name: Build project
+        working-directory: target-repo/${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          ${{ inputs.script }}
+
+      - name: Commit and push changes
+        working-directory: target-repo
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "No changes found"
+            exit 0
+          fi
+
+          git add .
+          git commit -m "chore: update validateSubscription for maintained actions"
+          git push origin HEAD
