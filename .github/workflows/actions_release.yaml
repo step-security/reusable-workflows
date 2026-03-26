@@ -274,8 +274,6 @@ jobs:
         shell: bash
 
   build:
-    environment:
-      name: releaseNewActionVersion
     permissions:
       contents: write
     outputs:
@@ -365,6 +363,8 @@ jobs:
       upload-assets: false
 
   release:
+    environment:
+      name: releaseNewActionVersion
     needs: [build, provenance]
     permissions:
       contents: write
@@ -401,6 +401,7 @@ jobs:
 
       - name: Update Semantic Tag
         run: |
+          git fetch --tags
           TAG=${{ github.event.inputs.tag }}
           SEMANTIC_TAG=$(echo $TAG | grep -oP '^v\d+')
           git tag -f $SEMANTIC_TAG $TAG
