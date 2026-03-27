@@ -296,20 +296,13 @@ jobs:
           output-file: ./sbom-${{ github.event.inputs.tag }}.spdx.json
           format: "spdx"
 
-      - name: Create and Push Tag
-        run: |
-          git tag ${{ github.event.inputs.tag }}
-          git push origin ${{ github.event.inputs.tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Generate Provenance File
         run: |
           echo "Generating provenance.json"
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
           TAG_NAME="${{ github.event.inputs.tag }}"
-          COMMIT_SHA=$(git show-ref -s $TAG_NAME)
+          COMMIT_SHA=$(git rev-parse HEAD)
           TAG_DETAILS=$(gh api repos/$OWNER/$REPO/git/commits/$COMMIT_SHA | jq '.')
           jq -n --arg repository "${{ github.repository }}" \
                --arg workflow "${{ github.workflow }}" \
@@ -401,7 +394,7 @@ jobs:
 
       - name: Update Semantic Tag
         run: |
-          git fetch --tags
+          git fetch origin tag ${{ github.event.inputs.tag }}
           TAG=${{ github.event.inputs.tag }}
           SEMANTIC_TAG=$(echo $TAG | grep -oP '^v\d+')
           git tag -f $SEMANTIC_TAG $TAG
