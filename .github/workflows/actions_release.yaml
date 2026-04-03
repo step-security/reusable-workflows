@@ -83,6 +83,45 @@ jobs:
         run: |
           echo "**Action Type**: ${{ env.action_type }}" >> $GITHUB_STEP_SUMMARY
 
+      - name: Verify Docker Image Source
+        if: env.action_type == 'docker'
+        run: |
+          IMAGE=""
+          if [ -n "${{ inputs.working_directory }}" ] && [ "${{ inputs.working_directory }}" != "" ]; then
+            IFS=',' read -ra DIRS <<< "${{ inputs.working_directory }}"
+            for dir in "${DIRS[@]}"; do
+              dir=$(echo "$dir" | xargs)
+              for f in "$dir/action.yml" "$dir/action.yaml"; do
+                if [ -f "$f" ]; then
+                  IMAGE=$(grep -E '^\s*image:' "$f" | head -1 | sed "s/.*image:\s*['\"]*//" | sed "s/['\"].*//")
+                  break 2
+                fi
+              done
+            done
+          else
+            for f in action.yml action.yaml; do
+              if [ -f "$f" ]; then
+                IMAGE=$(grep -E '^\s*image:' "$f" | head -1 | sed "s/.*image:\s*['\"]*//" | sed "s/['\"].*//")
+                break
+              fi
+            done
+          fi
+
+          echo "Detected image: $IMAGE"
+
+          if [[ -z "$IMAGE" ]]; then
+            echo "**Validation Failed**: No image found in action.yml for docker-based action." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          if [[ "$IMAGE" != *"ghcr.io/step-security/"* ]]; then
+            echo "**Validation Failed**: Docker-based action must use a step-security published image (ghcr.io/step-security/...). Found: \`$IMAGE\`" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          echo "**Docker Image Check**: Passed — using step-security image: \`$IMAGE\`" >> $GITHUB_STEP_SUMMARY
+        shell: bash
+
       - name: Print provided tag
         run: |
           echo "**Provided Tag**: ${{ github.event.inputs.tag }}" >> $GITHUB_STEP_SUMMARY
