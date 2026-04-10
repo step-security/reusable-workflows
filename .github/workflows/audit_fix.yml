@@ -127,33 +127,35 @@ jobs:
             echo "No open PR found."
             echo "EXISTING_PR_NUMBER=" >> $GITHUB_ENV
           fi
-  
-      - name: Reset & Update PR Branch Using API
+
+      - name: Skip If PR Already Open
+        if: env.EXISTING_PR_NUMBER != ''
         run: |
-          echo "🔍 Checking if branch ${{ env.BRANCH_NAME }} exists..."
+          echo "::error::Open PR #${{ env.EXISTING_PR_NUMBER }} exists for branch ${{ env.BRANCH_NAME }}. Please merge or close it first before running audit fix."
+          exit 1
+
+      - name: Create Branch From Base
+        run: |
+          BASE_COMMIT_SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }}" | jq -r '.object.sha')
 
           BRANCH_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ env.BRANCH_NAME }}")
 
           BRANCH_EXISTS=$(echo "$BRANCH_RESPONSE" | jq -r '.ref // empty')
 
-          BASE_COMMIT_SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ inputs.base_branch }}" | jq -r '.object.sha')
-
           if [[ -n "$BRANCH_EXISTS" ]]; then
-            echo "🔄 Branch ${{ env.BRANCH_NAME }} exists. Resetting to match ${{ inputs.base_branch }}"
+            echo "Branch ${{ env.BRANCH_NAME }} exists (orphaned). Resetting to ${{ inputs.base_branch }}..."
             curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{\"sha\": \"$BASE_COMMIT_SHA\", \"force\": true}" \
               "https://api.github.com/repos/${{ github.repository }}/git/refs/heads/${{ env.BRANCH_NAME }}"
-            echo "✅ Branch ${{ env.BRANCH_NAME }} reset successfully."
           else
-            echo "🆕 Branch ${{ env.BRANCH_NAME }} does not exist. Creating from ${{ inputs.base_branch }}..."
+            echo "Creating branch ${{ env.BRANCH_NAME }} from ${{ inputs.base_branch }}..."
             curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{\"ref\": \"refs/heads/${{ env.BRANCH_NAME }}\", \"sha\": \"$BASE_COMMIT_SHA\"}" \
               "https://api.github.com/repos/${{ github.repository }}/git/refs"
-            echo "✅ New branch ${{ env.BRANCH_NAME }} created successfully."
           fi
 
       - name: Run Audit Fix
@@ -227,28 +229,8 @@ jobs:
 
           echo "✅ All changes committed successfully."
 
-      - name: Reopen PR If It Was Closed
-        if: env.changes == 'true' && env.EXISTING_PR_NUMBER != ''
-        run: |
-          PR_STATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.EXISTING_PR_NUMBER }}" \
-            | jq -r '.state')
-
-          if [[ "$PR_STATE" == "closed" ]]; then
-            echo "🔄 Reopening closed PR #${{ env.EXISTING_PR_NUMBER }}..."
-            curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d '{"state": "open"}' \
-              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ env.EXISTING_PR_NUMBER }}"
-            echo "✅ PR #${{ env.EXISTING_PR_NUMBER }} reopened."
-          else
-            echo "PR #${{ env.EXISTING_PR_NUMBER }} is already open."
-          fi
-          echo "PR_NUMBER=${{ env.EXISTING_PR_NUMBER }}" >> $GITHUB_ENV
-
-
-      - name: Create PR (If Not Existing)
-        if: env.changes == 'true' && env.EXISTING_PR_NUMBER == ''
+      - name: Create PR
+        if: env.changes == 'true'
         run: |
           echo "No existing PR found. Creating new PR..."
           PR_RESPONSE=$(curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
