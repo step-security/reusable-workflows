@@ -128,7 +128,7 @@ jobs:
             echo "EXISTING_PR_NUMBER=" >> $GITHUB_ENV
           fi
 
-      - name: Skip If PR Already Open
+      - name: Fail If PR Already Open
         if: env.EXISTING_PR_NUMBER != ''
         run: |
           echo "::error::Open PR #${{ env.EXISTING_PR_NUMBER }} exists for branch ${{ env.BRANCH_NAME }}. Please merge or close it first before running audit fix."
