@@ -98,7 +98,7 @@ jobs:
               dir=$(echo "$dir" | xargs)
               for f in "$dir/action.yml" "$dir/action.yaml"; do
                 if [ -f "$f" ]; then
-                  IMAGE=$(grep -E '^\s*image:' "$f" | head -1 | sed "s/.*image:\s*['\"]*//" | sed "s/['\"].*//")
+                  IMAGE=$(yq '.runs.image' "$f")
                   break 2
                 fi
               done
@@ -106,7 +106,7 @@ jobs:
           else
             for f in action.yml action.yaml; do
               if [ -f "$f" ]; then
-                IMAGE=$(grep -E '^\s*image:' "$f" | head -1 | sed "s/.*image:\s*['\"]*//" | sed "s/['\"].*//")
+                IMAGE=$(yq '.runs.image' "$f")
                 break
               fi
             done
