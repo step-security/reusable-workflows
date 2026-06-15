@@ -21,6 +21,7 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+      checks: write
 
     steps:
       - name: Harden Runner
@@ -63,27 +64,44 @@ jobs:
             --repo-path "$GITHUB_WORKSPACE" \
             --output "$GITHUB_WORKSPACE/review_report.json"
 
-          {
-            echo "## Onboarding deterministic checks"
-            echo ""
-            python3 - "$GITHUB_WORKSPACE/review_report.json" <<'PY'
-          import json, sys
-          r = json.load(open(sys.argv[1]))
-          s = r["summary"]
-          print(f"- **Action type:** `{r['action_type']}`")
-          print(f"- **Upstream:** `{r['upstream'] or 'unknown'}`")
-          print(f"- **Total:** {s['total']}  |  **Passed:** {s['passed']}  |  **Failed (must):** {s['failed_must']}  |  **Failed (should):** {s['failed_should']}  |  **Skipped:** {s['skipped']}")
-          print()
-          fails = [f for f in r["findings"] if f["status"] == "fail"]
-          if fails:
-              print("### Failures")
-              print("| Severity | Rule | File | Message |")
-              print("|---|---|---|---|")
-              for f in fails:
-                  msg = (f.get("message") or "").replace("|", "\\|")
-                  print(f"| {f['severity']} | `{f['rule_id']}` | `{f.get('file','')}` | {msg} |")
-          PY
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Post deterministic summary to GitHub Checks
+        if: |
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          REPORT_PATH: ${{ github.workspace }}/review_report.json
+        with:
+          script: |
+            const fs = require('fs');
+            const r = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+            const s = r.summary;
+            const emoji = { pass: '✅', fail: '❌', skip: '⏭️' };
+
+            let md = `**Action type:** \`${r.action_type}\`  ·  **Upstream:** \`${r.upstream || 'unknown'}\`\n\n`;
+            md += `✅ ${s.passed} passed · ❌ ${s.failed_must} failed (must) · ⚠️ ${s.failed_should} failed (should) · ⏭️ ${s.skipped} skipped\n\n`;
+            md += `| Status | Severity | Rule | File | Message |\n|---|---|---|---|---|\n`;
+            for (const f of r.findings) {
+              const msg = (f.message || '').replace(/\|/g, '\\|');
+              md += `| ${emoji[f.status] || ''} | ${f.severity} | \`${f.rule_id}\` | \`${f.file || ''}\` | ${msg} |\n`;
+            }
+
+            const conclusion = s.failed_must > 0
+              ? 'failure'
+              : s.failed_should > 0 ? 'neutral' : 'success';
+
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'StepSecurity onboarding checks',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion,
+              output: {
+                title: `${s.passed}/${s.total} passed · ${s.failed_must} must-fix · ${s.failed_should} should-fix`,
+                summary: md,
+              },
+            });
 
       - name: Upload review report
         if: |
@@ -153,17 +171,7 @@ jobs:
             ## StepSecurity onboarding review
 
             **Action type:** `<type>`  ·  **Upstream:** `<owner>/<repo>`
-            **Deterministic:** ✅ N passed · ❌ N failed (must) · ⚠️ N failed (should) · ⏭️ N skipped
-
-            ### ❌ Must-fix (deterministic)
-            | Rule | File | Issue |
-            |---|---|---|
-            | ... | ... | ... |
-
-            ### ⚠️ Should-fix (deterministic)
-            | Rule | File | Issue |
-            |---|---|---|
-            | ... | ... | ... |
+            Deterministic results are published as a separate check — see the **"StepSecurity onboarding checks"** check in the Checks tab.
 
             ### 🔎 Judgment-call review
             **License copyright:** <verdict + file:line + 1–2 sentences>
@@ -181,7 +189,7 @@ jobs:
             <2–3 sentences: ready to merge, or what blocks it>
             ```
 
-            Keep verdicts terse. Cite file:line for every fail. Do not repeat the deterministic table contents in the judgment-call section.
+            Keep verdicts terse. Cite file:line for every fail. Do not render the deterministic findings table — that's in the Checks tab.
 
       - name: Run Claude Code Review (cherry-pick)
         if:  |
