@@ -165,7 +165,13 @@ jobs:
             If `action_type` is `composite`, also check (the tool already covers "first step contains the subscription URL" — skip that):
               - **All non-official actions are pinned** by SHA, and any with a step-security maintained alternative are swapped.
 
-            **Step 4 — Output one PR comment in this exact structure:**
+            **Step 4 — Output one PR comment in this exact structure.**
+
+            Every verdict MUST begin with one of these three emojis (no exceptions, no alternative emojis like 🔴 / 🟡):
+              · `✅ Pass` — rule clearly satisfied
+              · `⚠️ Needs attention` — ambiguous, partially met, or reviewer should double-check
+              · `❌ Fail` — rule clearly violated
+            For bullet lists under `uses:` versions and `<type>-specific`, prefix EACH bullet with the same emoji.
 
             ```
             ## StepSecurity onboarding review
@@ -174,13 +180,13 @@ jobs:
             Deterministic results are published as a separate check — see the **"StepSecurity onboarding checks"** check in the Checks tab.
 
             ### 🔎 Judgment-call review
-            **License copyright:** <verdict + file:line + 1–2 sentences>
-            **Subscription invoked first:** <verdict + file:line>
-            **Upstream-only workflows removed:** <verdict + list any that should be removed>
-            **`uses:` versions / advisor swaps:** <bullet list of any that need updating>
-            **README major-version tags:** <verdict + file:line of any full-semver tags found>
-            **Security scan:** <verdict + any findings with file:line>
-            **<type>-specific:** <bullet list of pass/fail for each rule above>
+            **License copyright:** <emoji + verdict — file:line + 1–2 sentences>
+            **Subscription invoked first:** <emoji + verdict — file:line>
+            **Upstream-only workflows removed:** <emoji + verdict — list any that should be removed>
+            **`uses:` versions / advisor swaps:** <emoji-prefixed bullets, one per `uses:` reference checked>
+            **README major-version tags:** <emoji + verdict — file:line of any full-semver tags found>
+            **Security scan:** <emoji + verdict — any findings with file:line>
+            **<type>-specific:** <emoji-prefixed bullets, one per rule above>
 
             ### 🐛 Tool sanity check
             <empty if all of the tool's findings looked right; otherwise list each finding you disagree with and why>
