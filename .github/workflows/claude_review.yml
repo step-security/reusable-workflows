@@ -33,12 +33,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Get reusable workflow ref
-        id: get-workflow-ref
-        run: |
-          ref="${{ github.workflow_ref }}"
-          echo "ref=${ref##*@}" >> "$GITHUB_OUTPUT"
-
       - name: Checkout reusable-workflows (for deterministic review tool)
         if: |
           contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
@@ -46,7 +40,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: step-security/reusable-workflows
-          ref: ${{ steps.get-workflow-ref.outputs.ref }}
+          ref: ${{ github.job_workflow_sha }}
           path: .reusable-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 
