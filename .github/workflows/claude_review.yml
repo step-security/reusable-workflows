@@ -21,6 +21,7 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+      checks: write
 
     steps:
       - name: Harden Runner
@@ -32,7 +33,87 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 1
- 
+
+      - name: Checkout reusable-workflows (for deterministic review tool)
+        if: |
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: step-security/reusable-workflows
+          ref: feat/update-review-process
+          path: .reusable-workflows
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        if: |
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.24'
+
+      - name: Run deterministic onboarding checks
+        if: |
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
+        id: review-tool
+        working-directory: .reusable-workflows
+        run: |
+          go run ./cmd/review-onboarding \
+            --repo-path "$GITHUB_WORKSPACE" \
+            --output "$GITHUB_WORKSPACE/review_report.json"
+
+      - name: Post deterministic summary to GitHub Checks
+        if: |
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          REPORT_PATH: ${{ github.workspace }}/review_report.json
+        with:
+          script: |
+            const fs = require('fs');
+            const r = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+            const s = r.summary;
+            const emoji = { pass: '✅', fail: '❌', skip: '⏭️' };
+
+            let md = `**Action type:** \`${r.action_type}\`  ·  **Upstream:** \`${r.upstream || 'unknown'}\`\n\n`;
+            md += `✅ ${s.passed} passed · ❌ ${s.failed_must} failed (must) · ⚠️ ${s.failed_should} failed (should) · ⏭️ ${s.skipped} skipped\n\n`;
+            md += `| Status | Severity | Rule | File | Message |\n|---|---|---|---|---|\n`;
+            for (const f of r.findings) {
+              const msg = (f.message || '').replace(/\|/g, '\\|');
+              md += `| ${emoji[f.status] || ''} | ${f.severity} | \`${f.rule_id}\` | \`${f.file || ''}\` | ${msg} |\n`;
+            }
+
+            const conclusion = s.failed_must > 0
+              ? 'failure'
+              : s.failed_should > 0 ? 'neutral' : 'success';
+
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'StepSecurity onboarding checks',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion,
+              output: {
+                title: `${s.passed}/${s.total} passed · ${s.failed_must} must-fix · ${s.failed_should} should-fix`,
+                summary: md,
+              },
+            });
+
+      - name: Upload review report
+        if: |
+          always() &&
+          contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
+          !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: review_report
+          path: review_report.json
+          if-no-files-found: ignore
+
       - name: Run Claude Code Review (Default)
         if: |
           contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
@@ -43,46 +124,78 @@ jobs:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           # Direct prompt for automated review (no @claude mention needed)
           direct_prompt: |
-            Please review this pull request and provide comprehensive feedback.
+            You are reviewing a StepSecurity onboarding PR for a forked GitHub Action.
 
-            Keep following things in mind:
-            
-            Determine whether the action is node based, docker based, composite action or multiple actions of different kinds are present
-            I am listing some common points to review for all actions and some specific points depending on type of action
+            **Step 1 — Read the deterministic report.**
+            A tool has already checked the boolean compliance rules. Read `review_report.json` at the repo root. It has this shape:
+            ```
+            { "action_type": "node|docker|composite|unknown",
+              "upstream": "<owner>/<repo>",
+              "summary": { "total": N, "passed": N, "failed_must": N, "failed_should": N, "skipped": N },
+              "findings": [ { "rule_id", "title", "severity": "must|should", "status": "pass|fail|skip", "file", "message" } ] }
+            ```
 
-            Points to be taken care of for all actions:
-              - License should be present with copyright of step-security as well as original author.
-              - There should be a action.yml file and in that as well author name should be step-security. If the field author-name is not present then ignore.
-              - Security.md file should be present.
-              - FUNDING.yml or funding.yml file should not be present.
-              - .github folder should contain workflows folder and this folder should contain following files
-                - auto_cherry_pick.yml
-                - actions_release.yml
-              - renovate.json file should not be present.
-              - PULL_REQUEST.md file should not be present.
-              - ISSUE_TEMEPLATE folder should not be present.
-              - CHANGELOG.md file should not be present.
-              - .vscode folder should not be present
-              - If Readme.md file contains any part which tells how the action should be used, then make sure that in the example complete semver tag is not used and only major version is used.
-              - Readme.md should contain this banner ![StepSecurity Maintained Action](https://raw.githubusercontent.com/step-security/maintained-actions-assets/main/assets/maintained-action-banner.png)](https://docs.stepsecurity.io/actions/stepsecurity-maintained-actions)
-              - Code should contain subscription check and make sure it makes call to this url "https://agent.api.stepsecurity.io/v1/github/$GITHUB_REPOSITORY/actions/maintained-actions-subscription" for checking the subscription.
-              - In the subscription check code the value of upstream variable must be similar to the string constructed from original-owner and repo-name properties from .github/workflows/auto_cherry_pick.yml file in following way <original-owner>/<repo-name>
-              - Scan the whole code thoroughly for any existing security vulnerabilities that might be exploited by malicious actors.
+            **Step 2 — Sanity-check the tool's findings.**
+            Spot-check 2–3 of the tool's pass/fail decisions against the actual files (the tool uses regex; it can be wrong). If you find a tool error, call it out explicitly in your comment.
 
-            Specific points for node based actions
-              - author name in package.json file should be step-security. If the field author-name is not present then ignore.
-              - If there is a field named git repository in package.json file then it should contain the phrase step-security. If the field repository is not present then ignore.
-              - None of the dependencies should be unused.
-              - dist folder should be present.
-              - If package.json does not contain the field "build" in the scripts object or the package manager is not npm then check the files .github/workflows/audit_fix.yml and .github/workflows/actions_release.yml, they should contain script as an input.
+            **Step 3 — Cover the judgment-call rules the tool cannot check.**
+            For each item below, look at the actual files and report a verdict (Pass / Fail / Needs attention) with file:line evidence.
 
-            Specific points for docker based actions
-              - The action must use a published docker image
-              - The docker image must be published to step security org
-              - The docker image must be tagged with major version
+            Common (all action types):
+              - **License copyright semantics.** LICENSE must contain a StepSecurity copyright (`Copyright (c) 2026 StepSecurity` or similar). If the upstream license had an original-author copyright, that must still be present *above* the StepSecurity one. Compare against the upstream license at `https://github.com/<upstream>/blob/HEAD/LICENSE` if you need a reference.
+              - **Subscription check is invoked first.** The `validateSubscription()` (or equivalent) call must be the first executable line of the action's entry point — before any other logic runs. Cite the line.
+              - **Upstream-only workflows removed.** Any workflow in `.github/workflows/` that came from upstream and isn't related to code/action testing (release automation, tag updates, PR labelling, stale issues, etc.) must be removed. The required ones are `auto_cherry_pick.yml`, `actions_release.yml`, `audit_package.yml`. Workflows for CI/tests are fine.
+              - **GitHub Actions versions in workflows.** Every `uses:` reference in `.github/workflows/*.yml` should be at its latest major version tag (e.g. `actions/checkout@v6`, `actions/setup-node@v5`). Where a step-security maintained drop-in exists (https://app.stepsecurity.io/action-advisor?tab=maintained — e.g. `docker/login-action` → `step-security/docker-login-action`, `docker/setup-qemu-action` → `step-security/setup-qemu-action`, `docker/setup-buildx-action` → `step-security/setup-buildx-action`, `docker/build-push-action` → `step-security/docker-build-push-action`), the reference must be swapped. **Do not add new steps** that weren't already in the workflow.
+              - **README usage examples.** Usage snippets must use a major-version tag (`@v1`) not a full semver (`@v1.2.3`). Any other actions referenced in usage examples follow the same advisor-swap + latest-major rule as above.
+              - **Security review.** Scan diffs and all new code for: command injection, untrusted input passed to shell, prototype pollution, dependency confusion / typosquats, exposed secrets, `eval`, suspicious `postinstall` scripts, unsafe `pickle`/`yaml.load`, anything that looks like an attempt to exfiltrate `GITHUB_TOKEN`.
 
-            Specific points for composite actions
-              - If the action uses any other action which is not an official github action, make sure it is pinned.
+            If `action_type` is `node`, also check (the tool already covers dist/, .npmrc, node24 runtime, and package.json author/repository — skip those):
+              - **No unused dependencies** in `package.json` (best-effort — grep imports against the dep list).
+              - **Workflow inputs.** Inspect `package.json` and the lockfiles, then check `.github/workflows/audit_package.yml`, `.github/workflows/actions_release.yml`, and `.github/workflows/auto_cherry_pick.yml`:
+                  · `node_version` input must be declared (default `"24"`) and passed to the reusable workflow in **all three** workflows.
+                  · `script` input must be declared and passed in **all three** workflows if any of: `package.json.scripts.build` is missing, package manager is not npm, or the build script does not invoke a bundler (`ncc` / `esbuild` / `webpack` / `rollup` / `tsc` / `tsup` / `vite` / `parcel`).
+                  · `package_manager` input (default `"yarn"`) must be declared and passed in `audit_package.yml` and `auto_cherry_pick.yml` if `yarn.lock` exists.
+                  · `yarn_version` input must be declared and passed in **all three** workflows if `yarn.lock` exists AND yarn is not 1.x (detected by `__metadata:` header in yarn.lock or presence of `.yarnrc.yml`).
+                For each missing input, cite the workflow file and the specific spec condition that triggered the requirement.
+              - **Subscription check code shape.** Must use `axios` (TS: `import axios, {isAxiosError} from 'axios'`; JS: `import axios from 'axios'`). Must include `@actions/github` and `@actions/core` deps. Match the snippet shape in the onboarding spec — in particular flag any raw ESC bytes (the actual unprintable control character) in place of the literal backslash-u-001b escape sequence.
+
+            If `action_type` is `docker`, also check (the tool already covers docker.yml existence and jq-in-Dockerfile — skip those):
+              - **Subscription check location.** If a shell script is invoked by the Dockerfile, the subscription check must live there. If a JS/TS/Python/Go file is invoked, the check must be in that file using the language-appropriate translation.
+
+            If `action_type` is `composite`, also check (the tool already covers "first step contains the subscription URL" — skip that):
+              - **All non-official actions are pinned** by SHA, and any with a step-security maintained alternative are swapped.
+
+            **Step 4 — Output one PR comment in this exact structure.**
+
+            Every verdict MUST begin with one of these three emojis (no exceptions, no alternative emojis like 🔴 / 🟡):
+              · `✅ Pass` — rule clearly satisfied
+              · `⚠️ Needs attention` — ambiguous, partially met, or reviewer should double-check
+              · `❌ Fail` — rule clearly violated
+            For bullet lists under `uses:` versions and `<type>-specific`, prefix EACH bullet with the same emoji.
+
+            ```
+            ## StepSecurity onboarding review
+
+            **Action type:** `<type>`  ·  **Upstream:** `<owner>/<repo>`
+            Deterministic results are published as a separate check — see the **"StepSecurity onboarding checks"** check in the Checks tab.
+
+            ### 🔎 Judgment-call review
+            **License copyright:** <emoji + verdict — file:line + 1–2 sentences>
+            **Subscription invoked first:** <emoji + verdict — file:line>
+            **Upstream-only workflows removed:** <emoji + verdict — list any that should be removed>
+            **`uses:` versions / advisor swaps:** <emoji-prefixed bullets, one per `uses:` reference checked>
+            **README major-version tags:** <emoji + verdict — file:line of any full-semver tags found>
+            **Security scan:** <emoji + verdict — any findings with file:line>
+            **<type>-specific:** <emoji-prefixed bullets, one per rule above>
+
+            ### 🐛 Tool sanity check
+            <empty if all of the tool's findings looked right; otherwise list each finding you disagree with and why>
+
+            ### Summary
+            <2–3 sentences: ready to merge, or what blocks it>
+            ```
+
+            Keep verdicts terse. Cite file:line for every fail. Do not render the deterministic findings table — that's in the Checks tab.
 
       - name: Run Claude Code Review (cherry-pick)
         if:  |
