@@ -18,8 +18,8 @@ jobs:
 
     permissions:
       contents: read
-      pull-requests: read
-      issues: read
+      pull-requests: write
+      issues: write
       id-token: write
 
     steps:
@@ -38,15 +38,21 @@ jobs:
           contains(join(github.event.pull_request.labels.*.name, ','), 'review-required') &&
           !(github.event.pull_request.title == 'chore: Cherry-picked changes from upstream')
         id: claude-review-default
-        uses: anthropics/claude-code-action@28f83620103c48a57093dcc2837eec89e036bb9f # beta
+        uses: step-security/claude-code-action@47884cb1e63ec28b772f47891b2d445561bb9b50 # v1.0.146
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
-          # Direct prompt for automated review (no @claude mention needed)
-          direct_prompt: |
+          github_token: ${{ github.token }}
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(curl:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
             Please review this pull request and provide comprehensive feedback.
 
             Keep following things in mind:
-            
+
             Determine whether the action is node based, docker based, composite action or multiple actions of different kinds are present
             I am listing some common points to review for all actions and some specific points depending on type of action
 
@@ -84,20 +90,70 @@ jobs:
             Specific points for composite actions
               - If the action uses any other action which is not an official github action, make sure it is pinned.
 
+            Use `gh pr comment` to post the overall review as a top-level PR comment.
+            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) to attach line-specific findings inline on the diff.
+            Only post GitHub comments - don't submit review text as messages.
+
+            Format the top-level PR comment using the following structure:
+            ## PR Review
+
+            ### Action Type
+            State the action type (node-based / docker-based / composite).
+
+            ### ✅ Passed Checks
+            List all checks that passed as bullet points.
+
+            ### ❌ Failed Checks
+            List all checks that failed as bullet points, with a brief explanation for each.
+
+            ### ⚠️ Warnings
+            List any non-blocking concerns or recommendations.
+
+            ### 🔒 Security Findings
+            List any security vulnerabilities found, or state "No security issues found."
+
+            ### Summary
+            One or two sentence overall verdict.
+
       - name: Run Claude Code Review (cherry-pick)
         if:  |
           (github.event.pull_request.title == 'chore: Cherry-picked changes from upstream') && 
           contains(join(github.event.pull_request.labels.*.name, ','), 'review required')
         id: claude-review-cherry-pick
-        uses: anthropics/claude-code-action@28f83620103c48a57093dcc2837eec89e036bb9f # beta
+        uses: step-security/claude-code-action@47884cb1e63ec28b772f47891b2d445561bb9b50 # v1.0.146
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
-          # Direct prompt for automated review (no @claude mention needed)
-          direct_prompt: |
+          github_token: ${{ github.token }}
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(curl:*)"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
             Please review this pull request and provide comprehensive feedback.
 
             Keep following things in mind:
-              
+
             - Verify that cherry-picked changes are complete and consistent
             - All the changes present in upstream repository must have been successfully included in this PR
             - Scan all code changes for any potential security vulnerabilities
+
+            Use `gh pr comment` to post the overall review as a top-level PR comment.
+            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) to attach line-specific findings inline on the diff.
+            Only post GitHub comments - don't submit review text as messages.
+
+            Format the top-level PR comment using the following structure:
+            ## Cherry-Pick Review
+
+            ### ✅ Passed Checks
+            List all checks that passed as bullet points.
+
+            ### ❌ Failed Checks
+            List all checks that failed as bullet points, with a brief explanation for each.
+
+            ### 🔒 Security Findings
+            List any security vulnerabilities found, or state "No security issues found."
+
+            ### Summary
+            One or two sentence overall verdict on whether the cherry-pick is complete and consistent.
