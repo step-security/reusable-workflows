@@ -44,7 +44,7 @@ jobs:
           github_token: ${{ github.token }}
           claude_args: |
             --model claude-sonnet-4-6
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(curl:*)"
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(curl:*)"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -91,7 +91,6 @@ jobs:
               - If the action uses any other action which is not an official github action, make sure it is pinned.
 
             Use `gh pr comment` to post the overall review as a top-level PR comment.
-            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) to attach line-specific findings inline on the diff.
             Only post GitHub comments - don't submit review text as messages.
 
             Format the top-level PR comment using the following structure:
@@ -101,16 +100,16 @@ jobs:
             State the action type (node-based / docker-based / composite).
 
             ### ✅ Passed Checks
-            List all checks that passed as bullet points.
+            For each passed check use ✅ to start the statement, and the describe the check
 
             ### ❌ Failed Checks
-            List all checks that failed as bullet points, with a brief explanation for each.
+            For each failed check use ❌ to start the statement, with a brief explanation for failure.
 
             ### ⚠️ Warnings
-            List any non-blocking concerns or recommendations.
+            List any non-blocking concerns or recommendations. Make sure each statement starts with ⚠️.
 
             ### 🔒 Security Findings
-            List any security vulnerabilities found, or state "No security issues found."
+            List any security vulnerabilities found, or state "No security issues found. Use ❌ or ⚠️ if vulnerability found otherwise mark with ✅"
 
             ### Summary
             One or two sentence overall verdict.
@@ -126,7 +125,7 @@ jobs:
           github_token: ${{ github.token }}
           claude_args: |
             --model claude-sonnet-4-6
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(curl:*)"
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(curl:*)"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -140,20 +139,22 @@ jobs:
             - Scan all code changes for any potential security vulnerabilities
 
             Use `gh pr comment` to post the overall review as a top-level PR comment.
-            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) to attach line-specific findings inline on the diff.
             Only post GitHub comments - don't submit review text as messages.
 
             Format the top-level PR comment using the following structure:
             ## Cherry-Pick Review
 
             ### ✅ Passed Checks
-            List all checks that passed as bullet points.
+            For each passed check use ✅ to start the statement, and the describe the check
 
             ### ❌ Failed Checks
-            List all checks that failed as bullet points, with a brief explanation for each.
+            For each failed check use ❌ to start the statement, with a brief explanation for failure.
+
+            ### ⚠️ Warnings
+            List any non-blocking concerns or recommendations. Make sure each statement starts with ⚠️.
 
             ### 🔒 Security Findings
-            List any security vulnerabilities found, or state "No security issues found."
+            List any security vulnerabilities found, or state "No security issues found. Use ❌ or ⚠️ if vulnerability found otherwise mark with ✅"
 
             ### Summary
-            One or two sentence overall verdict on whether the cherry-pick is complete and consistent.
+            One or two sentence overall verdict.
