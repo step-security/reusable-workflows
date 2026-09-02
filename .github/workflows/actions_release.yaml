@@ -27,7 +27,7 @@ on:
         description: "Specify Node.js version (e.g., '18', '20', 'lts/*')"
         required: false
         type: string
-        default: "20"
+        default: "24"
       additional_assets:
         description: "Download and include additional release assets from a workflow artifact"
         required: false
