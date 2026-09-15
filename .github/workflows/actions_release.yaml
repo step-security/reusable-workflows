@@ -163,8 +163,122 @@ jobs:
         run: |
           PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // "None"')
           echo "**Previous Tag**: $PREVIOUS_TAG" >> $GITHUB_STEP_SUMMARY
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get Next Semver Versions
+        id: next-semvers
+        if: steps.previous-tag.outputs.previous_tag != 'None' && steps.previous-tag.outputs.previous_tag != ''
+        uses: step-security/github-action-next-semvers@419d152119f7938ad7417d579680f80c4d22f56f # v1.2.1
+        with:
+          version: ${{ steps.previous-tag.outputs.previous_tag }}
+
+      - name: Validate Version Progression
+        run: |
+          NEW_TAG="${{ github.event.inputs.tag }}"
+          PREV_TAG="${{ steps.previous-tag.outputs.previous_tag }}"
+
+          # BLOCK 1: Fail if this release tag already exists.
+          if gh release view "$NEW_TAG" &>/dev/null; then
+            printf "\n> [!CAUTION]\n> Release \`%s\` already exists. Delete it before creating a new one.\n" "$NEW_TAG" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # BLOCK 2: Nothing to compare if there's no previous release — silent pass.
+          if [ "$PREV_TAG" = "None" ] || [ -z "$PREV_TAG" ]; then
+            exit 0
+          fi
+
+          # BLOCK 3: The three valid next versions computed from the previous tag.
+          # e.g. previous=v1.3.2 → patch=v1.3.3, minor=v1.4.0, major=v2.0.0
+          NEXT_PATCH="${{ steps.next-semvers.outputs.v_patch }}"
+          NEXT_MINOR="${{ steps.next-semvers.outputs.v_minor }}"
+          NEXT_MAJOR="${{ steps.next-semvers.outputs.v_major }}"
+
+          # BLOCK 4: Split tags into major, minor, patch numbers for comparison.
+          # Strip the "v" prefix so "v1.3.2" becomes "1.3.2" before splitting on ".".
+          NEW_CORE="${NEW_TAG#v}"
+          NEW_MAJOR=$(echo "$NEW_CORE" | cut -d. -f1)
+          NEW_MINOR=$(echo "$NEW_CORE" | cut -d. -f2)
+          NEW_PATCH_NUM=$(echo "$NEW_CORE" | cut -d. -f3)
+
+          PREV_CORE="${PREV_TAG#v}"
+          PREV_MAJOR=$(echo "$PREV_CORE" | cut -d. -f1)
+          PREV_MINOR=$(echo "$PREV_CORE" | cut -d. -f2)
+          PREV_PATCH_NUM=$(echo "$PREV_CORE" | cut -d. -f3)
+
+          # BLOCK 5: Exact next patch (vx.x.x+1) — only clean silent pass. Everything else gets a warning.
+          if [ "$NEW_TAG" = "$NEXT_PATCH" ]; then
+            exit 0
+          fi
+
+          # BLOCK 6: Regression — new tag is older than the previous release. Hard fail.
+          IS_REGRESSION=false
+          if [ "$NEW_MAJOR" -lt "$PREV_MAJOR" ]; then
+            IS_REGRESSION=true
+          elif [ "$NEW_MAJOR" -eq "$PREV_MAJOR" ] && [ "$NEW_MINOR" -lt "$PREV_MINOR" ]; then
+            IS_REGRESSION=true
+          elif [ "$NEW_MAJOR" -eq "$PREV_MAJOR" ] && [ "$NEW_MINOR" -eq "$PREV_MINOR" ] && [ "$NEW_PATCH_NUM" -le "$PREV_PATCH_NUM" ]; then
+            IS_REGRESSION=true
+          fi
+
+          if [ "$IS_REGRESSION" = true ]; then
+            printf "\n> [!CAUTION]\n> Version regression: \`%s\` is older than \`%s\`. Expected at least \`%s\`. Make absolutely sure this is intentional.\n" "$NEW_TAG" "$PREV_TAG" "$NEXT_PATCH" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # BLOCK 7: Everything else — valid forward move but not a simple patch bump.
+          # Skipped entirely if it's a regression (diffs would be negative and meaningless).
+          # Compose one warning so the releaser knows what they're doing.
+          if [ "$IS_REGRESSION" = true ]; then
+            exit 0
+          fi
+          MAJOR_DIFF=$((NEW_MAJOR - PREV_MAJOR))
+          MINOR_DIFF=$((NEW_MINOR - PREV_MINOR))
+          PATCH_DIFF=$((NEW_PATCH_NUM - PREV_PATCH_NUM))
+
+          if [ "$NEW_TAG" = "$NEXT_MAJOR" ]; then
+            # Exact major bump — valid, but always worth flagging
+            MSG="Looks like a major release from \`$PREV_TAG\` to \`$NEW_TAG\`. Make sure breaking changes are intentional."
+          elif [ "$NEW_TAG" = "$NEXT_MINOR" ]; then
+            # Exact minor bump — valid, flag it
+            MSG="Looks like a minor release from \`$PREV_TAG\` to \`$NEW_TAG\`. Make sure this is intentional."
+          elif [ "$MAJOR_DIFF" -gt 0 ]; then
+            SKIPPED=$((MAJOR_DIFF - 1))
+            CONVENTION=""
+            if [ "$NEW_MINOR" -ne 0 ] || [ "$NEW_PATCH_NUM" -ne 0 ]; then
+              CONVENTION=" and minor/patch should be 0 for a major release"
+            fi
+            if [ "$MAJOR_DIFF" -eq 1 ]; then
+              # MAJOR_DIFF=1 but minor/patch not 0 — convention issue only
+              MSG="Looks like a major release from \`$PREV_TAG\` to \`$NEW_TAG\`${CONVENTION}. Did you mean \`$NEXT_MAJOR\`?"
+            else
+              # Skipped one or more major versions
+              MSG="Looks like a major jump from \`$PREV_TAG\` to \`$NEW_TAG\`, skipping $SKIPPED major version(s)${CONVENTION}. Expected \`$NEXT_MAJOR\`. Make sure this is intentional."
+            fi
+          elif [ "$MINOR_DIFF" -gt 0 ]; then
+            SKIPPED=$((MINOR_DIFF - 1))
+            CONVENTION=""
+            if [ "$NEW_PATCH_NUM" -ne 0 ]; then
+              CONVENTION=" and patch should be 0 for a minor release"
+            fi
+            if [ "$MINOR_DIFF" -eq 1 ]; then
+              # MINOR_DIFF=1 but patch not 0 — convention issue only
+              MSG="Looks like a minor release from \`$PREV_TAG\` to \`$NEW_TAG\`${CONVENTION}. Did you mean \`$NEXT_MINOR\`?"
+            else
+              # Skipped one or more minor versions
+              MSG="Looks like a minor jump from \`$PREV_TAG\` to \`$NEW_TAG\`, skipping $SKIPPED minor version(s)${CONVENTION}. Expected \`$NEXT_MINOR\`. Make sure this is intentional."
+            fi
+          else
+            # Patch jumped but skipped versions
+            SKIPPED=$((PATCH_DIFF - 1))
+            MSG="Looks like a patch jump from \`$PREV_TAG\` to \`$NEW_TAG\`, skipping $SKIPPED patch version(s). Expected \`$NEXT_PATCH\`. Make sure this is intentional."
+          fi
+
+          printf "\n> [!WARNING]\n> %s\n" "$MSG" >> $GITHUB_STEP_SUMMARY
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
 
       - name: Set up Node.js
         if: (env.action_type == 'node' || inputs.setup_node == true)
