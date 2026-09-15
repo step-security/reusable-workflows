@@ -163,8 +163,127 @@ jobs:
         run: |
           PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // "None"')
           echo "**Previous Tag**: $PREVIOUS_TAG" >> $GITHUB_STEP_SUMMARY
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get Next Semver Versions
+        id: next-semvers
+        if: steps.previous-tag.outputs.previous_tag != 'None' && steps.previous-tag.outputs.previous_tag != ''
+        uses: step-security/github-action-next-semvers@419d152119f7938ad7417d579680f80c4d22f56f # v1.2.1
+        with:
+          version: ${{ steps.previous-tag.outputs.previous_tag }}
+
+      - name: Validate Release Tag
+        run: |
+          NEW_TAG="${{ github.event.inputs.tag }}"
+          PREV_TAG="${{ steps.previous-tag.outputs.previous_tag }}"
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+
+          # Hard fail if this release tag already exists.
+          if gh release view "$NEW_TAG" &>/dev/null; then
+            printf "\n> [!CAUTION]\n> Release \`%s\` already exists. Delete it before creating a new one.\n" "$NEW_TAG" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # Nothing to compare on first-ever release.
+          if [ "$PREV_TAG" = "None" ] || [ -z "$PREV_TAG" ]; then
+            exit 0
+          fi
+
+          # Get the publish date of the previous release to filter PRs merged after it.
+          LAST_RELEASE_DATE=$(gh api "repos/$OWNER/$REPO/releases/tags/$PREV_TAG" --jq '.published_at')
+
+          # Check if any PRs merged since the last release came from an auto-cherry-pick branch.
+          CHERRY_PICK_COUNT=$(gh api "repos/$OWNER/$REPO/pulls?state=closed&base=main&per_page=100" \
+            --jq "[.[] | select(.merged_at != null and .merged_at > \"$LAST_RELEASE_DATE\" and (.head.ref | test(\"auto-cherry-pick\")))] | length")
+
+          if [ "$CHERRY_PICK_COUNT" -gt 0 ]; then
+            # Cherry-pick path: tag must align with the upstream release — version progression check is irrelevant here.
+
+            DESCRIPTION=$(gh api "repos/$OWNER/$REPO" --jq '.description')
+            UPSTREAM=$(echo "$DESCRIPTION" | grep -oP 'Secure drop-in replacement for \K[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+' || true)
+
+            if [ -z "$UPSTREAM" ]; then
+              printf "\n> [!CAUTION]\n> %d cherry-pick PR(s) found but no upstream reference found in repo description. Add 'Secure drop-in replacement for owner/repo' to the About section.\n" "$CHERRY_PICK_COUNT" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+
+            UPSTREAM_TAG=$(gh api "repos/$UPSTREAM/releases?per_page=10" --jq '[.[] | select(.prerelease == false and .draft == false)] | .[0].tag_name // "none"' 2>/dev/null || echo "none")
+
+            if [ "$UPSTREAM_TAG" = "none" ] || [ -z "$UPSTREAM_TAG" ]; then
+              printf "\n> [!WARNING]\n> %d cherry-pick PR(s) found from upstream \`%s\` but upstream has no release yet.\n" "$CHERRY_PICK_COUNT" "$UPSTREAM" >> $GITHUB_STEP_SUMMARY
+              exit 0
+            fi
+
+            # Normalize upstream tag: vx → vx.0.0, vx.y → vx.y.0, vx.y.z → vx.y.z
+            UPSTREAM_CORE="${UPSTREAM_TAG#v}"
+            DOT_COUNT=$(echo "$UPSTREAM_CORE" | tr -cd '.' | wc -c)
+            if [ "$DOT_COUNT" -eq 0 ]; then
+              EXPECTED_TAG="v${UPSTREAM_CORE}.0.0"
+            elif [ "$DOT_COUNT" -eq 1 ]; then
+              EXPECTED_TAG="v${UPSTREAM_CORE}.0"
+            else
+              EXPECTED_TAG="v${UPSTREAM_CORE}"
+            fi
+
+            if [ "$EXPECTED_TAG" = "$PREV_TAG" ]; then
+              # We already released this upstream version — fall through to patch+1 or minor+1.
+              printf "\n> [!WARNING]\n> Cherry-pick PR(s) found from upstream \`%s\` but we already released \`%s\`. Treating as an incremental release.\n" "$UPSTREAM" "$PREV_TAG" >> $GITHUB_STEP_SUMMARY
+              CHERRY_PICK_COUNT=0
+            elif [ "$NEW_TAG" != "$EXPECTED_TAG" ]; then
+              printf "\n> [!CAUTION]\n> Cherry-pick PR(s) from upstream \`%s\` (at \`%s\`) found. Expected tag \`%s\` but got \`%s\`.\n" "$UPSTREAM" "$UPSTREAM_TAG" "$EXPECTED_TAG" "$NEW_TAG" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            else
+              printf "\n> [!NOTE]\n> Upstream \`%s\` is at \`%s\`. Tag \`%s\` matches — cherry-pick alignment confirmed.\n" "$UPSTREAM" "$UPSTREAM_TAG" "$NEW_TAG" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          if [ "$CHERRY_PICK_COUNT" -eq 0 ]; then
+            # No cherry-pick path: validate version progression against the previous release.
+
+            NEXT_PATCH="${{ steps.next-semvers.outputs.v_patch }}"
+            NEXT_MINOR="${{ steps.next-semvers.outputs.v_minor }}"
+            NEXT_MAJOR="${{ steps.next-semvers.outputs.v_major }}"
+
+            NEW_CORE="${NEW_TAG#v}"
+            NEW_MAJOR=$(echo "$NEW_CORE" | cut -d. -f1)
+            NEW_MINOR=$(echo "$NEW_CORE" | cut -d. -f2)
+            NEW_PATCH_NUM=$(echo "$NEW_CORE" | cut -d. -f3)
+
+            PREV_CORE="${PREV_TAG#v}"
+            PREV_MAJOR=$(echo "$PREV_CORE" | cut -d. -f1)
+            PREV_MINOR=$(echo "$PREV_CORE" | cut -d. -f2)
+            PREV_PATCH_NUM=$(echo "$PREV_CORE" | cut -d. -f3)
+
+            # Only patch+1 or minor+1 acceptable without a cherry-pick.
+            if [ "$NEW_TAG" != "$NEXT_PATCH" ] && [ "$NEW_TAG" != "$NEXT_MINOR" ]; then
+              # Regression gets a dedicated stern message.
+              IS_REGRESSION=false
+              if [ "$NEW_MAJOR" -lt "$PREV_MAJOR" ]; then IS_REGRESSION=true
+              elif [ "$NEW_MAJOR" -eq "$PREV_MAJOR" ] && [ "$NEW_MINOR" -lt "$PREV_MINOR" ]; then IS_REGRESSION=true
+              elif [ "$NEW_MAJOR" -eq "$PREV_MAJOR" ] && [ "$NEW_MINOR" -eq "$PREV_MINOR" ] && [ "$NEW_PATCH_NUM" -le "$PREV_PATCH_NUM" ]; then IS_REGRESSION=true
+              fi
+
+              if [ "$IS_REGRESSION" = true ]; then
+                printf "\n> [!CAUTION]\n> Version regression: \`%s\` is older than \`%s\`. Expected at least \`%s\`. Make absolutely sure this is intentional.\n" "$NEW_TAG" "$PREV_TAG" "$NEXT_PATCH" >> $GITHUB_STEP_SUMMARY
+                exit 1
+              fi
+
+              # Forward but not patch+1 or minor+1 — hard fail.
+              printf "\n> [!CAUTION]\n> Only patch (\`%s\`) or minor (\`%s\`) bump is acceptable here. Got \`%s\`.\n" "$NEXT_PATCH" "$NEXT_MINOR" "$NEW_TAG" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+
+            # patch+1 → silent pass. minor+1 → warn (intentional minor release).
+            if [ "$NEW_TAG" = "$NEXT_MINOR" ]; then
+              printf "\n> [!WARNING]\n> Looks like a minor release from \`%s\` to \`%s\`. Make sure this is intentional.\n" "$PREV_TAG" "$NEW_TAG" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
 
       - name: Set up Node.js
         if: (env.action_type == 'node' || inputs.setup_node == true)
