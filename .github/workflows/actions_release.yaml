@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: false
+      backport:
+        description: "Set to true for patch/backport releases from a maintenance branch — skips major semantic tag update and prevents overwriting the current latest release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -460,6 +465,29 @@ jobs:
           name: additional-release-assets
           path: additional-assets
 
+      - name: Find Previous Tag for Backport Release Notes
+        if: inputs.backport
+        run: |
+          NEW_TAG="${{ github.event.inputs.tag }}"
+          ALL_TAGS=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+
+          if [ -z "$ALL_TAGS" ]; then
+            echo "NOTES_START_TAG=" >> $GITHUB_ENV
+          else
+            # Sort existing tags + new tag together by semver, then find the tag immediately below new tag
+            SORTED=$(printf '%s\n%s\n' "$ALL_TAGS" "$NEW_TAG" | sort -V | uniq)
+            PREV_TAG=$(echo "$SORTED" | grep -B1 "^${NEW_TAG}$" | head -1)
+
+            if [[ "$PREV_TAG" == "$NEW_TAG" || -z "$PREV_TAG" ]]; then
+              # New tag is the lowest version — no start tag, generate notes from beginning
+              echo "NOTES_START_TAG=" >> $GITHUB_ENV
+            else
+              echo "NOTES_START_TAG=$PREV_TAG" >> $GITHUB_ENV
+            fi
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release with all assets
         run: |
           EXTRA_ASSETS=""
@@ -467,8 +495,17 @@ jobs:
             EXTRA_ASSETS=$(find additional-assets -type f -printf '%p ')
           fi
 
+          RELEASE_FLAGS=""
+          if [ "${{ inputs.backport }}" = "true" ]; then
+            RELEASE_FLAGS="--make-latest false"
+            if [ -n "$NOTES_START_TAG" ]; then
+              RELEASE_FLAGS="$RELEASE_FLAGS --notes-start-tag $NOTES_START_TAG"
+            fi
+          fi
+
           gh release create ${{ github.event.inputs.tag }} \
             --generate-notes \
+            $RELEASE_FLAGS \
             sbom-${{ github.event.inputs.tag }}.spdx.json \
             provenance.json \
             provenance_verifier.sh \
@@ -478,6 +515,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Semantic Tag
+        if: ${{ !inputs.backport }}
         run: |
           git fetch origin tag ${{ github.event.inputs.tag }}
           TAG=${{ github.event.inputs.tag }}
