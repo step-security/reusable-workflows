@@ -512,6 +512,8 @@ jobs:
           echo "make_latest=$MAKE_LATEST" >> "$GITHUB_OUTPUT"
           echo "move_major_tag=$MOVE_MAJOR_TAG" >> "$GITHUB_OUTPUT"
           echo "notes_start_tag=$NOTES_START_TAG" >> "$GITHUB_OUTPUT"
+          # The tag that must remain "Latest" when this release is not the latest.
+          echo "keep_latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
           {
             echo "**Release Positioning**"
@@ -529,8 +531,11 @@ jobs:
       - name: Create GitHub Release with all assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NEW_TAG: ${{ github.event.inputs.tag }}
           MAKE_LATEST: ${{ steps.positioning.outputs.make_latest }}
           NOTES_START_TAG: ${{ steps.positioning.outputs.notes_start_tag }}
+          KEEP_LATEST_TAG: ${{ steps.positioning.outputs.keep_latest_tag }}
         run: |
           EXTRA_ASSETS=""
           if [ -d "additional-assets" ]; then
@@ -545,14 +550,23 @@ jobs:
             fi
           fi
 
-          gh release create ${{ github.event.inputs.tag }} \
+          gh release create "$NEW_TAG" \
             --generate-notes \
             $RELEASE_FLAGS \
-            sbom-${{ github.event.inputs.tag }}.spdx.json \
+            sbom-"$NEW_TAG".spdx.json \
             provenance.json \
             provenance_verifier.sh \
             multiple.intoto.jsonl \
             $EXTRA_ASSETS
+
+          # `gh release create --latest=false` is unreliable, so enforce positioning via the
+          # authoritative REST `make_latest` field. Re-asserting latest on the highest release
+          # also demotes this backport if GitHub wrongly marked it latest on creation.
+          if [ "$MAKE_LATEST" = "false" ] && [ -n "$KEEP_LATEST_TAG" ]; then
+            KEEP_ID=$(gh api "repos/$REPO/releases/tags/$KEEP_LATEST_TAG" --jq '.id')
+            gh api -X PATCH "repos/$REPO/releases/$KEEP_ID" -f make_latest=true >/dev/null
+            echo "Re-asserted Latest on $KEEP_LATEST_TAG (backport $NEW_TAG kept off Latest)."
+          fi
 
       - name: Update Semantic Tag
         if: steps.positioning.outputs.move_major_tag == 'true'
