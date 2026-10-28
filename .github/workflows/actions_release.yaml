@@ -527,6 +527,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release with all assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ steps.positioning.outputs.make_latest }}
+          NOTES_START_TAG: ${{ steps.positioning.outputs.notes_start_tag }}
         run: |
           EXTRA_ASSETS=""
           if [ -d "additional-assets" ]; then
@@ -534,10 +538,10 @@ jobs:
           fi
 
           RELEASE_FLAGS=""
-          if [ "${{ steps.positioning.outputs.make_latest }}" = "false" ]; then
-            RELEASE_FLAGS="--make-latest false"
-            if [ -n "${{ steps.positioning.outputs.notes_start_tag }}" ]; then
-              RELEASE_FLAGS="$RELEASE_FLAGS --notes-start-tag ${{ steps.positioning.outputs.notes_start_tag }}"
+          if [ "$MAKE_LATEST" = "false" ]; then
+            RELEASE_FLAGS="--latest=false"
+            if [ -n "$NOTES_START_TAG" ]; then
+              RELEASE_FLAGS="$RELEASE_FLAGS --notes-start-tag $NOTES_START_TAG"
             fi
           fi
 
@@ -549,8 +553,6 @@ jobs:
             provenance_verifier.sh \
             multiple.intoto.jsonl \
             $EXTRA_ASSETS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Semantic Tag
         if: steps.positioning.outputs.move_major_tag == 'true'
