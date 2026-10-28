@@ -465,26 +465,49 @@ jobs:
           name: additional-release-assets
           path: additional-assets
 
-      - name: Find Previous Tag for Backport Release Notes
-        if: inputs.backport
+      - name: Determine Release Positioning
+        id: positioning
         run: |
           NEW_TAG="${{ github.event.inputs.tag }}"
+          FORCE_BACKPORT="${{ inputs.backport }}"
+
           ALL_TAGS=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+          # `gh release view` with no tag returns the current "Latest" release
+          LATEST_TAG=$(gh release view --json tagName --jq '.tagName' 2>/dev/null || echo "")
+          echo "New tag: $NEW_TAG | Current latest: ${LATEST_TAG:-<none>} | Forced backport: $FORCE_BACKPORT"
 
-          if [ -z "$ALL_TAGS" ]; then
-            echo "NOTES_START_TAG=" >> $GITHUB_ENV
-          else
-            # Sort existing tags + new tag together by semver, then find the tag immediately below new tag
-            SORTED=$(printf '%s\n%s\n' "$ALL_TAGS" "$NEW_TAG" | sort -V | uniq)
-            PREV_TAG=$(echo "$SORTED" | grep -B1 "^${NEW_TAG}$" | head -1)
-
-            if [[ "$PREV_TAG" == "$NEW_TAG" || -z "$PREV_TAG" ]]; then
-              # New tag is the lowest version — no start tag, generate notes from beginning
-              echo "NOTES_START_TAG=" >> $GITHUB_ENV
-            else
-              echo "NOTES_START_TAG=$PREV_TAG" >> $GITHUB_ENV
+          # A release is a backport if explicitly forced, OR if the new tag is not
+          # strictly higher than the current latest release (auto-detection safety net).
+          IS_BACKPORT=false
+          if [ "$FORCE_BACKPORT" = "true" ]; then
+            IS_BACKPORT=true
+          elif [ -n "$LATEST_TAG" ] && [ "$NEW_TAG" != "$LATEST_TAG" ]; then
+            HIGHEST=$(printf '%s\n%s\n' "$LATEST_TAG" "$NEW_TAG" | sort -V | tail -1)
+            if [ "$HIGHEST" != "$NEW_TAG" ]; then
+              IS_BACKPORT=true
             fi
           fi
+
+          # For a backport, scope release notes to the release sitting just below the new tag.
+          NOTES_START_TAG=""
+          if [ "$IS_BACKPORT" = "true" ] && [ -n "$ALL_TAGS" ]; then
+            SORTED=$(printf '%s\n%s\n' "$ALL_TAGS" "$NEW_TAG" | sort -V | uniq)
+            PREV_TAG=$(echo "$SORTED" | grep -B1 "^${NEW_TAG}$" | head -1)
+            if [ "$PREV_TAG" != "$NEW_TAG" ] && [ -n "$PREV_TAG" ]; then
+              NOTES_START_TAG="$PREV_TAG"
+            fi
+          fi
+
+          echo "is_backport=$IS_BACKPORT" >> "$GITHUB_OUTPUT"
+          echo "notes_start_tag=$NOTES_START_TAG" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "**Release Positioning**"
+            echo "- New tag: \`$NEW_TAG\`"
+            echo "- Current latest: \`${LATEST_TAG:-none}\`"
+            echo "- Treated as backport: \`$IS_BACKPORT\`"
+            [ -n "$NOTES_START_TAG" ] && echo "- Notes start tag: \`$NOTES_START_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -496,10 +519,10 @@ jobs:
           fi
 
           RELEASE_FLAGS=""
-          if [ "${{ inputs.backport }}" = "true" ]; then
+          if [ "${{ steps.positioning.outputs.is_backport }}" = "true" ]; then
             RELEASE_FLAGS="--make-latest false"
-            if [ -n "$NOTES_START_TAG" ]; then
-              RELEASE_FLAGS="$RELEASE_FLAGS --notes-start-tag $NOTES_START_TAG"
+            if [ -n "${{ steps.positioning.outputs.notes_start_tag }}" ]; then
+              RELEASE_FLAGS="$RELEASE_FLAGS --notes-start-tag ${{ steps.positioning.outputs.notes_start_tag }}"
             fi
           fi
 
@@ -515,7 +538,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Semantic Tag
-        if: ${{ !inputs.backport }}
+        if: steps.positioning.outputs.is_backport == 'false'
         run: |
           git fetch origin tag ${{ github.event.inputs.tag }}
           TAG=${{ github.event.inputs.tag }}
