@@ -447,9 +447,6 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-        with:
-          # Full history so the from-beginning changelog can walk all commits.
-          fetch-depth: 0
 
       - name: Download build artifacts
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
@@ -502,28 +499,8 @@ jobs:
             MOVE_MAJOR_TAG=false
           fi
 
-          # Scope release notes to the previous release in the SAME major line.
-          # If there's no earlier release in this major line, generate notes from the
-          # beginning of history (the first release of a line should list its full changelog).
-          NOTES_START_TAG=""
-          NOTES_FROM_BEGINNING=false
-          if [ "$MAKE_LATEST" = "true" ]; then
-            # Forward (latest) release: let GitHub auto-select the previous release.
-            :
-          else
-            SAME_MAJOR_SORTED=$(printf '%s\n%s\n' "$ALL_TAGS" "$NEW_TAG" | grep -E "^${MAJOR}(\.|$)" | sort -V | uniq)
-            PREV_SAME_MAJOR=$(echo "$SAME_MAJOR_SORTED" | grep -B1 "^${NEW_TAG}$" | head -1 || true)
-            if [ -n "$PREV_SAME_MAJOR" ] && [ "$PREV_SAME_MAJOR" != "$NEW_TAG" ]; then
-              NOTES_START_TAG="$PREV_SAME_MAJOR"
-            else
-              NOTES_FROM_BEGINNING=true
-            fi
-          fi
-
           echo "make_latest=$MAKE_LATEST" >> "$GITHUB_OUTPUT"
           echo "move_major_tag=$MOVE_MAJOR_TAG" >> "$GITHUB_OUTPUT"
-          echo "notes_start_tag=$NOTES_START_TAG" >> "$GITHUB_OUTPUT"
-          echo "notes_from_beginning=$NOTES_FROM_BEGINNING" >> "$GITHUB_OUTPUT"
           # The tag that must remain "Latest" when this release is not the latest.
           echo "keep_latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
@@ -533,11 +510,6 @@ jobs:
             echo "- Current latest: \`${LATEST_TAG:-none}\`"
             echo "- Mark as latest: \`$MAKE_LATEST\`"
             echo "- Move \`$MAJOR\` tag: \`$MOVE_MAJOR_TAG\`"
-            if [ -n "$NOTES_START_TAG" ]; then
-              echo "- Notes start tag: \`$NOTES_START_TAG\`"
-            elif [ "$NOTES_FROM_BEGINNING" = "true" ]; then
-              echo "- Notes: from beginning of history (first release in \`$MAJOR\` line)"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -549,8 +521,6 @@ jobs:
           NEW_TAG: ${{ github.event.inputs.tag }}
           TARGET_SHA: ${{ github.sha }}
           MAKE_LATEST: ${{ steps.positioning.outputs.make_latest }}
-          NOTES_START_TAG: ${{ steps.positioning.outputs.notes_start_tag }}
-          NOTES_FROM_BEGINNING: ${{ steps.positioning.outputs.notes_from_beginning }}
           KEEP_LATEST_TAG: ${{ steps.positioning.outputs.keep_latest_tag }}
         run: |
           EXTRA_ASSETS=""
@@ -560,28 +530,12 @@ jobs:
 
           # Always cut the release/tag from the exact commit the workflow was dispatched on,
           # so a release from a maintenance branch doesn't get tagged on the default branch.
-          RELEASE_FLAGS="--target $TARGET_SHA"
+          # This also makes GitHub's auto-generated notes correct: --generate-notes selects the
+          # previous release by commit ancestry (nearest ancestor release tag), which naturally
+          # scopes notes to "changes on this branch since its previous release".
+          RELEASE_FLAGS="--target $TARGET_SHA --generate-notes"
           if [ "$MAKE_LATEST" = "false" ]; then
             RELEASE_FLAGS="$RELEASE_FLAGS --latest=false"
-          fi
-
-          # Release notes source:
-          #  - from beginning (first release of a major line): build the changelog from full history
-          #  - otherwise: GitHub-generated notes, scoped to the same-major previous tag when known
-          if [ "$NOTES_FROM_BEGINNING" = "true" ]; then
-            NOTES_BODY=$(git log --no-merges --pretty=format:'* %s (%h)' "$TARGET_SHA")
-            NOTES_FILE="$(mktemp)"
-            {
-              echo "## What's Changed"
-              echo ""
-              echo "$NOTES_BODY"
-            } > "$NOTES_FILE"
-            RELEASE_FLAGS="$RELEASE_FLAGS --notes-file $NOTES_FILE"
-          else
-            RELEASE_FLAGS="$RELEASE_FLAGS --generate-notes"
-            if [ -n "$NOTES_START_TAG" ]; then
-              RELEASE_FLAGS="$RELEASE_FLAGS --notes-start-tag $NOTES_START_TAG"
-            fi
           fi
 
           gh release create "$NEW_TAG" \
