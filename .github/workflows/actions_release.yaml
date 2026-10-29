@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: false
+      backport:
+        description: "Set to true for patch/backport releases from a maintenance branch — skips major semantic tag update and prevents overwriting the current latest release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -460,24 +465,98 @@ jobs:
           name: additional-release-assets
           path: additional-assets
 
+      - name: Determine Release Positioning
+        id: positioning
+        run: |
+          NEW_TAG="${{ github.event.inputs.tag }}"
+          FORCE_BACKPORT="${{ inputs.backport }}"
+
+          ALL_TAGS=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+          # `gh release view` with no tag returns the current "Latest" release
+          LATEST_TAG=$(gh release view --json tagName --jq '.tagName' 2>/dev/null || echo "")
+          echo "New tag: $NEW_TAG | Current latest: ${LATEST_TAG:-<none>} | Forced backport: $FORCE_BACKPORT"
+
+          # --- Mark as latest? Only when this is the highest release overall. ---
+          MAKE_LATEST=true
+          if [ -n "$LATEST_TAG" ] && [ "$NEW_TAG" != "$LATEST_TAG" ]; then
+            HIGHEST=$(printf '%s\n%s\n' "$LATEST_TAG" "$NEW_TAG" | sort -V | tail -1)
+            if [ "$HIGHEST" != "$NEW_TAG" ]; then
+              MAKE_LATEST=false
+            fi
+          fi
+
+          # --- Move the vN major tag? Only when this is the highest release within its own major line. ---
+          MAJOR=$(echo "$NEW_TAG" | grep -oE '^v[0-9]+')
+          SAME_MAJOR_HIGHEST=$(printf '%s\n%s\n' "$ALL_TAGS" "$NEW_TAG" | grep -E "^${MAJOR}(\.|$)" | sort -V | tail -1 || true)
+          MOVE_MAJOR_TAG=true
+          if [ -n "$SAME_MAJOR_HIGHEST" ] && [ "$SAME_MAJOR_HIGHEST" != "$NEW_TAG" ]; then
+            MOVE_MAJOR_TAG=false
+          fi
+
+          # An explicit backport is a "special" release — not latest, floats no tags.
+          if [ "$FORCE_BACKPORT" = "true" ]; then
+            MAKE_LATEST=false
+            MOVE_MAJOR_TAG=false
+          fi
+
+          echo "make_latest=$MAKE_LATEST" >> "$GITHUB_OUTPUT"
+          echo "move_major_tag=$MOVE_MAJOR_TAG" >> "$GITHUB_OUTPUT"
+          # The tag that must remain "Latest" when this release is not the latest.
+          echo "keep_latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "**Release Positioning**"
+            echo "- New tag: \`$NEW_TAG\`"
+            echo "- Current latest: \`${LATEST_TAG:-none}\`"
+            echo "- Mark as latest: \`$MAKE_LATEST\`"
+            echo "- Move \`$MAJOR\` tag: \`$MOVE_MAJOR_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release with all assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NEW_TAG: ${{ github.event.inputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
+          MAKE_LATEST: ${{ steps.positioning.outputs.make_latest }}
+          KEEP_LATEST_TAG: ${{ steps.positioning.outputs.keep_latest_tag }}
         run: |
           EXTRA_ASSETS=""
           if [ -d "additional-assets" ]; then
             EXTRA_ASSETS=$(find additional-assets -type f -printf '%p ')
           fi
 
-          gh release create ${{ github.event.inputs.tag }} \
-            --generate-notes \
-            sbom-${{ github.event.inputs.tag }}.spdx.json \
+          # Always cut the release/tag from the exact commit the workflow was dispatched on,
+          # so a release from a maintenance branch doesn't get tagged on the default branch.
+          # This also makes GitHub's auto-generated notes correct: --generate-notes selects the
+          # previous release by commit ancestry (nearest ancestor release tag), which naturally
+          # scopes notes to "changes on this branch since its previous release".
+          RELEASE_FLAGS="--target $TARGET_SHA --generate-notes"
+          if [ "$MAKE_LATEST" = "false" ]; then
+            RELEASE_FLAGS="$RELEASE_FLAGS --latest=false"
+          fi
+
+          gh release create "$NEW_TAG" \
+            $RELEASE_FLAGS \
+            sbom-"$NEW_TAG".spdx.json \
             provenance.json \
             provenance_verifier.sh \
             multiple.intoto.jsonl \
             $EXTRA_ASSETS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # `gh release create --latest=false` is unreliable, so enforce positioning via the
+          # authoritative REST `make_latest` field. Re-asserting latest on the highest release
+          # also demotes this backport if GitHub wrongly marked it latest on creation.
+          if [ "$MAKE_LATEST" = "false" ] && [ -n "$KEEP_LATEST_TAG" ]; then
+            KEEP_ID=$(gh api "repos/$REPO/releases/tags/$KEEP_LATEST_TAG" --jq '.id')
+            gh api -X PATCH "repos/$REPO/releases/$KEEP_ID" -f make_latest=true >/dev/null
+            echo "Re-asserted Latest on $KEEP_LATEST_TAG (backport $NEW_TAG kept off Latest)."
+          fi
 
       - name: Update Semantic Tag
+        if: steps.positioning.outputs.move_major_tag == 'true'
         run: |
           git fetch origin tag ${{ github.event.inputs.tag }}
           TAG=${{ github.event.inputs.tag }}
