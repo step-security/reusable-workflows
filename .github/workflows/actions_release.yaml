@@ -454,10 +454,6 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-        with:
-          # Fetch all tags so the major-line "highest version" check sees the complete tag
-          # set (the releases API is capped and could miss a higher same-major release).
-          fetch-tags: true
 
       - name: Download build artifacts
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
@@ -482,10 +478,13 @@ jobs:
           NEW_TAG="${{ github.event.inputs.tag }}"
           FORCE_BACKPORT="${{ inputs.backport }}"
 
-          # Complete set of vX.Y.Z release tags from git (the releases API is capped, so it can
-          # miss a higher same-major release and roll the major tag backward). The strict regex
-          # also excludes the floating vN / vN.M tags.
-          ALL_TAGS=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          # Complete set of vX.Y.Z release tags, read from the git refs API (paginated, so it is
+          # not subject to the `gh release list` cap, and does not depend on the checkout having
+          # fetched tags). A failed API call fails the step rather than silently treating the tag
+          # set as empty (which could roll the major tag backward). The strict regex excludes the
+          # floating vN / vN.M tags.
+          TAG_REFS=$(gh api --paginate "repos/${{ github.repository }}/git/matching-refs/tags/" --jq '.[].ref')
+          ALL_TAGS=$(printf '%s\n' "$TAG_REFS" | sed 's#^refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
           # `gh release view` with no tag returns the current "Latest" release
           LATEST_TAG=$(gh release view --json tagName --jq '.tagName' 2>/dev/null || echo "")
           echo "New tag: $NEW_TAG | Current latest: ${LATEST_TAG:-<none>} | Forced backport: $FORCE_BACKPORT"
